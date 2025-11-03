@@ -1,0 +1,4 @@
+/assets/
+*.so
+/mmcv/
+/data/

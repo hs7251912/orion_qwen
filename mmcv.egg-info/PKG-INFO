@@ -1,0 +1,68 @@
+Metadata-Version: 2.1
+Name: mmcv
+Version: 0.0.1
+Summary: OpenMMLab Computer Vision Foundation
+Home-page: https://github.com/open-mmlab/mmcv
+Author: MMCV Contributors
+Author-email: openmmlab@gmail.com
+Keywords: computer vision
+Classifier: Development Status :: 4 - Beta
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Topic :: Utilities
+License-File: LICENSE
+Requires-Dist: cython
+Requires-Dist: addict
+Requires-Dist: packaging
+Requires-Dist: Pillow
+Requires-Dist: matplotlib
+Requires-Dist: regex; sys_platform == "win32"
+Requires-Dist: pycocotools; platform_system == "Linux"
+Requires-Dist: pycocotools-windows; platform_system == "Windows"
+Requires-Dist: prettytable
+Requires-Dist: six
+Requires-Dist: terminaltables
+Requires-Dist: nuscenes-devkit
+Requires-Dist: scikit-image
+Requires-Dist: tensorboard
+Requires-Dist: cityscapesscripts
+Requires-Dist: imagecorruptions
+Requires-Dist: scipy
+Requires-Dist: scikit-learn
+Requires-Dist: open3d
+Requires-Dist: networkx
+Requires-Dist: ipython
+Requires-Dist: opencv-python
+Requires-Dist: seaborn
+Requires-Dist: einops
+Requires-Dist: casadi
+Requires-Dist: torchmetrics
+Requires-Dist: motmetrics==1.1.3
+Requires-Dist: trimesh
+Requires-Dist: pytest
+Requires-Dist: pytest-cov
+Requires-Dist: pytest-runner
+Requires-Dist: yapf==0.40.1
+Requires-Dist: flake8
+Requires-Dist: trimesh==2.35.39
+Requires-Dist: similaritymeasures
+Requires-Dist: laspy==2.5.0
+Requires-Dist: lazrs==0.5.3
+Requires-Dist: py-trees==0.8.3
+Requires-Dist: simple_watchdog_timer
+Requires-Dist: transforms3d
+Requires-Dist: tabulate
+Requires-Dist: ephem
+Requires-Dist: dictor
+Requires-Dist: torch==2.4.1+cu118
+Requires-Dist: torchvision==0.19.1+cu118
+Requires-Dist: flash-attn==0.2.8
+Requires-Dist: shapely==1.8.5.post1
+Requires-Dist: transformers==4.31.0
+Requires-Dist: peft==0.12.0
+Requires-Dist: numpy==1.23.0
+Requires-Dist: numba==0.48.0
+Requires-Dist: diffusers==0.32.2
+Requires-Dist: SentencePiece
