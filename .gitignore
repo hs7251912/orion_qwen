@@ -2,3 +2,6 @@
 *.so
 /mmcv/
 /data/
+/mmcv.egg-info/
+/work_dirs/
+/build/
