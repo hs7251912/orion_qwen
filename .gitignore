@@ -1,6 +1,8 @@
 /assets/
 *.so
 /data/
-/mmcv.egg-info/
 /work_dirs/
 /build/
+__pycache__/
+*.pyc
+*.egg-info/
