@@ -84,7 +84,7 @@ class OrionHead(AnchorFreeHead):
     def __init__(self,
                  num_classes,
                  in_channels=256,
-                 out_dims=3584,
+                 out_dims=4096,
                  embed_dims=256,
                  num_query=100,
                  num_reg_fcs=2,
@@ -823,12 +823,12 @@ class OrionHead(AnchorFreeHead):
         if self.output_dims is not None:
             if self.use_memory:
                 vlm_memory = torch.cat((vlm_memory, history_query), dim=1)
-            vlm_memory = self.output_projection(vlm_memory) # (B, 256, 256) -> (B, 256, 3584)
+            vlm_memory = self.output_projection(vlm_memory) # (B, 256, 256) -> (B, 256, 4096)
             can_bus_input = torch.cat([rec_can_bus, self.memory_canbus.flatten(-2), memory_ego_pose.mean(-2).flatten(-2)], dim=-1) # (1, 19+19*2+16*2)
             can_bus_input = can_bus_input.to(torch.float32)
-            can_bus_embed = self.can_bus_embed(can_bus_input) # (1, 89) -> (1, 3584)
+            can_bus_embed = self.can_bus_embed(can_bus_input) # (1, 89) -> (1, 4096)
             if self.with_ego_pose: 
-                vlm_memory = torch.cat([vlm_memory, can_bus_embed.unsqueeze(-2)], dim=-2) # (1, 257, 3584)
+                vlm_memory = torch.cat([vlm_memory, can_bus_embed.unsqueeze(-2)], dim=-2) # (1, 257, 4096)
             else:
                 vlm_memory = vlm_memory # 不引入多余的can bus信息
             

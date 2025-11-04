@@ -30,11 +30,7 @@ from mmcv.utils.misc import locations
 from ...datasets.data_utils.constants import IGNORE_INDEX, EGO_WAYPOINT_TOKEN
 from mmcv.models import builder
 
-try:
-    from transformers import Qwen2_5_VLForConditionalGeneration as VLMForCausalLM
-except ImportError:
-    # Fallback for older transformers or different naming
-    from ...utils.llava_llama import LlavaLlamaForCausalLM as VLMForCausalLM
+from ...utils.llava_llama import LlavaLlamaForCausalLM, add_special_token
 from transformers import AutoTokenizer, GenerationConfig
 
 from mmcv.utils.misc import load_model
@@ -212,8 +208,8 @@ class Orion(MVXTwoStageDetector):
                 self.with_bound_loss = with_bound_loss
                 self.with_cur = True
                 # generator motion & planning
-                self.present_distribution_in_channels = 3584
-                self.future_distribution_in_channels = 3584+12
+                self.present_distribution_in_channels = 4096
+                self.future_distribution_in_channels = 4096+12
                 self.now_pred_in_channels = 64
                 self.PROBABILISTIC = True
                 self.latent_dim = 32
@@ -247,9 +243,9 @@ class Orion(MVXTwoStageDetector):
                 )
                 ego_fut_decoder = []
                 for _ in range(2):
-                    ego_fut_decoder.append(Linear(7168, 7168))
+                    ego_fut_decoder.append(Linear(8192, 8192))
                     ego_fut_decoder.append(nn.ReLU())
-                ego_fut_decoder.append(Linear(7168, self.ego_fut_mode*2))
+                ego_fut_decoder.append(Linear(8192, self.ego_fut_mode*2))
                 self.ego_fut_decoder = nn.Sequential(*ego_fut_decoder)
                 self.loss_plan_reg = build_loss(loss_plan_reg)
                 self.loss_plan_bound = build_loss(loss_plan_bound)
@@ -278,19 +274,19 @@ class Orion(MVXTwoStageDetector):
                 ) # 20,6,2
 
                 self.plan_anchor_encoder = nn.Sequential(
-                    *linear_relu_ln(3584, 1, 1,512*6),
-                    nn.Linear(3584, 3584),
+                    *linear_relu_ln(4096, 1, 1,512*6),
+                    nn.Linear(4096, 4096),
                 )
                 self.time_mlp = nn.Sequential(
-                    SinusoidalPosEmb(3584),
-                    nn.Linear(3584, 3584),
+                    SinusoidalPosEmb(4096),
+                    nn.Linear(4096, 4096),
                     nn.Mish(),
-                    nn.Linear(3584, 3584),
+                    nn.Linear(4096, 4096),
                 )
                 diff_decoder_layer = CustomTransformerDecoderLayer(
                     num_poses=6,
-                    d_model=3584,
-                    d_ffn=3584,
+                    d_model=4096,
+                    d_ffn=4096,
                     num_head=32,
                 )
                 self.diff_decoder = CustomTransformerDecoder(diff_decoder_layer, 2)
@@ -301,9 +297,9 @@ class Orion(MVXTwoStageDetector):
                 )
             elif self.use_mlp_decoder: 
                 self.waypoint_decoder = nn.Sequential(
-                    nn.Linear(3584, 3584 // 2),
+                    nn.Linear(4096, 4096 // 2),
                     nn.GELU(),
-                    nn.Linear(3584//2, 6*2),
+                    nn.Linear(4096//2, 6*2),
                 )
                 self.waypoints_loss = nn.MSELoss(reduction='none')
         self.test_flag = False
@@ -536,7 +532,7 @@ class Orion(MVXTwoStageDetector):
         losses = dict()
 
         if self.with_pts_bbox:
-            outs_bbox, det_query = self.pts_bbox_head(img_metas, pos_embed, **data) # (1, 257, 3584)
+            outs_bbox, det_query = self.pts_bbox_head(img_metas, pos_embed, **data) # (1, 257, 4096)
             vision_embeded_obj = det_query.clone()
             loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs_bbox, gt_attr_labels]
             if self.pts_bbox_head.pred_traffic_light_state:
@@ -566,7 +562,7 @@ class Orion(MVXTwoStageDetector):
 
         if self.with_lm_head:
             if self.use_gen_token:
-                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 3584)
+                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
                 vlm_loss, ego_feature = self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False, return_ego_feature=True)
                 if self.mix_qa_training:
                     dummy_ego_feature = self.lm_head.get_model().embed_tokens(torch.tensor([[self.lm_head.config.waypoint_token_idx] for _ in range(B)]).cuda())
@@ -685,7 +681,7 @@ class Orion(MVXTwoStageDetector):
                     losses.update(wp_loss=wp_loss)
             else:
                 waypoint = None
-                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 3584)
+                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
                 vlm_loss= self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False)
                 losses.update(vlm_loss=vlm_loss[0])
         return losses
@@ -768,7 +764,7 @@ class Orion(MVXTwoStageDetector):
             
         if self.with_lm_head:
             history_input_output_id = []
-            vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 3584)
+            vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
             for i, input_ids in enumerate(data['input_ids'][0]):
                 input_ids = input_ids.unsqueeze(0)
                 special_token_inputs = False
@@ -1177,8 +1173,8 @@ class Orion(MVXTwoStageDetector):
         future_prediction_input = sample.unsqueeze(0).expand(self.fut_ts, -1, -1, -1)
         future_prediction_input = future_prediction_input.reshape(self.fut_ts, -1, self.latent_dim)
 
-        hidden_states = hidden_states.permute(1,0,2) # (4, 1, 3584) -> (1, 4, 3584)
-        hidden_state = hidden_states.reshape(self.layer_dim, -1, int(3584/4)) # (4, 4, 896)
+        hidden_states = hidden_states.permute(1,0,2) # (4, 1, 4096) -> (1, 4, 4096)
+        hidden_state = hidden_states.reshape(self.layer_dim, -1, int(4096/4)) # (4, 4, 1024)
         future_states = self.predict_model(future_prediction_input, hidden_state)
 
         current_states_hs = current_states.unsqueeze(0).repeat(6, 1, 1, 1)
