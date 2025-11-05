@@ -35,7 +35,7 @@ sys.path.append('')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')
-    parser.add_argument('config', help='train config file path')
+    parser.add_argument('--config', default='./adzoo/orion/configs/orion_train_qwen.py' ,help='train config file path')
     parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument(
         '--resume-from', help='the checkpoint file to resume from')
@@ -47,6 +47,7 @@ def parse_args():
     group_gpus.add_argument(
         '--gpus',
         type=int,
+        default=1,
         help='number of gpus to use '
         '(only applicable to non-distributed training)')
     group_gpus.add_argument(
