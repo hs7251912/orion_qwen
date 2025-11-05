@@ -6,3 +6,20 @@
 __pycache__/
 *.pyc
 *.egg-info/
+# Ignore compiled python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc.*
+
+# Ignore build directories
+build/
+dist/
+*.so
+
+# IDE files
+.vscode/
+*.swp
+*~
+
