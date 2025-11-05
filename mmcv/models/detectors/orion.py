@@ -164,7 +164,19 @@ class Orion(MVXTwoStageDetector):
                                         padding_side="right",
                                         use_fast=False,
                                         )
-            self.tokenizer.pad_token = self.tokenizer.unk_token
+            tok_path = str(tokenizer).lower()
+            is_qwen = ('qwen' in tok_path) or ('qwen' in getattr(self.tokenizer, 'name_or_path', '').lower())
+            if is_qwen:
+                # Qwen系：通常无unk_token，按官方推荐用eos作为pad
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+            else:
+                # 其他模型：保持项目原有逻辑（unk作为pad）；若unk缺失则回退到eos，避免报错
+                if getattr(self.tokenizer, 'pad_token', None) is None:
+                    if getattr(self.tokenizer, 'unk_token', None) is not None:
+                        self.tokenizer.pad_token = self.tokenizer.unk_token
+                    else:
+                        self.tokenizer.pad_token = self.tokenizer.eos_token                       
         else:
             self.tokenizer = None
         
@@ -197,19 +209,31 @@ class Orion(MVXTwoStageDetector):
         if use_gen_token:
             add_special_token([EGO_WAYPOINT_TOKEN], tokenizer = self.tokenizer, model = self.lm_head)
             self.lm_head.config.waypoint_token_idx = self.tokenizer(EGO_WAYPOINT_TOKEN, add_special_tokens=False).input_ids[0]
+            
+            # 更新 weighted_mask 以匹配 resize 后的 vocab_size (对于 Qwen 适配器)
+            if hasattr(self.lm_head, 'weighted_mask'):
+                new_vocab_size = len(self.tokenizer)
+                if self.lm_head.weighted_mask.shape[0] != new_vocab_size:
+                    new_weighted_mask = torch.ones(new_vocab_size, device=self.lm_head.weighted_mask.device, dtype=self.lm_head.weighted_mask.dtype)
+                    # 保留原有的权重
+                    old_size = min(self.lm_head.weighted_mask.shape[0], new_vocab_size)
+                    new_weighted_mask[:old_size] = self.lm_head.weighted_mask[:old_size]
+                    # 使用 register_buffer 重新注册
+                    self.lm_head.register_buffer("weighted_mask", new_weighted_mask, persistent=True)
         
         self.use_gen_token = use_gen_token
         self.use_diff_decoder = use_diff_decoder
         self.use_mlp_decoder = use_mlp_decoder
         assert self.use_gen_token if self.use_diff_decoder else True
         if self.use_gen_token:
+            llm_hidden_dim = self.lm_head.config.hidden_size
             if not self.use_diff_decoder and not self.use_mlp_decoder: # use VAE to generate traj
                 self.layer_dim = 4
                 self.with_bound_loss = with_bound_loss
                 self.with_cur = True
                 # generator motion & planning
-                self.present_distribution_in_channels = 4096
-                self.future_distribution_in_channels = 4096+12
+                self.present_distribution_in_channels = llm_hidden_dim
+                self.future_distribution_in_channels = llm_hidden_dim+12
                 self.now_pred_in_channels = 64
                 self.PROBABILISTIC = True
                 self.latent_dim = 32
@@ -243,9 +267,9 @@ class Orion(MVXTwoStageDetector):
                 )
                 ego_fut_decoder = []
                 for _ in range(2):
-                    ego_fut_decoder.append(Linear(8192, 8192))
+                    ego_fut_decoder.append(Linear(2*llm_hidden_dim, 2*llm_hidden_dim))
                     ego_fut_decoder.append(nn.ReLU())
-                ego_fut_decoder.append(Linear(8192, self.ego_fut_mode*2))
+                ego_fut_decoder.append(Linear(2*llm_hidden_dim, self.ego_fut_mode*2))
                 self.ego_fut_decoder = nn.Sequential(*ego_fut_decoder)
                 self.loss_plan_reg = build_loss(loss_plan_reg)
                 self.loss_plan_bound = build_loss(loss_plan_bound)
@@ -255,6 +279,7 @@ class Orion(MVXTwoStageDetector):
                 self.loss_vae_gen = build_loss(loss_vae_gen)
             
             elif self.use_diff_decoder:
+
                 self.plan_cls_loss_smooth = plan_cls_loss_smooth
                 self.diff_loss_weight = diff_loss_weight
                 self.diff_traj_cls_loss_weight = 10.0
@@ -274,19 +299,19 @@ class Orion(MVXTwoStageDetector):
                 ) # 20,6,2
 
                 self.plan_anchor_encoder = nn.Sequential(
-                    *linear_relu_ln(4096, 1, 1,512*6),
-                    nn.Linear(4096, 4096),
+                    *linear_relu_ln(llm_hidden_dim, 1, 1,512*6),
+                    nn.Linear(llm_hidden_dim, llm_hidden_dim),
                 )
                 self.time_mlp = nn.Sequential(
-                    SinusoidalPosEmb(4096),
-                    nn.Linear(4096, 4096),
+                    SinusoidalPosEmb(llm_hidden_dim),
+                    nn.Linear(llm_hidden_dim, llm_hidden_dim),
                     nn.Mish(),
-                    nn.Linear(4096, 4096),
+                    nn.Linear(llm_hidden_dim, llm_hidden_dim),
                 )
                 diff_decoder_layer = CustomTransformerDecoderLayer(
                     num_poses=6,
-                    d_model=4096,
-                    d_ffn=4096,
+                    d_model=llm_hidden_dim,
+                    d_ffn=llm_hidden_dim,
                     num_head=32,
                 )
                 self.diff_decoder = CustomTransformerDecoder(diff_decoder_layer, 2)
@@ -297,9 +322,9 @@ class Orion(MVXTwoStageDetector):
                 )
             elif self.use_mlp_decoder: 
                 self.waypoint_decoder = nn.Sequential(
-                    nn.Linear(4096, 4096 // 2),
+                    nn.Linear(llm_hidden_dim, llm_hidden_dim // 2),
                     nn.GELU(),
-                    nn.Linear(4096//2, 6*2),
+                    nn.Linear(llm_hidden_dim//2, 6*2),
                 )
                 self.waypoints_loss = nn.MSELoss(reduction='none')
         self.test_flag = False
@@ -1172,9 +1197,9 @@ class Orion(MVXTwoStageDetector):
 
         future_prediction_input = sample.unsqueeze(0).expand(self.fut_ts, -1, -1, -1)
         future_prediction_input = future_prediction_input.reshape(self.fut_ts, -1, self.latent_dim)
-
-        hidden_states = hidden_states.permute(1,0,2) # (4, 1, 4096) -> (1, 4, 4096)
-        hidden_state = hidden_states.reshape(self.layer_dim, -1, int(4096/4)) # (4, 4, 1024)
+        # # (layer_dim, 1, llm_hidden) -> (1, layer_dim, llm_hidden)
+        hidden_states = hidden_states.permute(1,0,2) # (4, 1, llm_hidden) -> (1, 4, llm_hidden)
+        hidden_state = hidden_states.reshape(self.layer_dim, -1, int(self.present_distribution_in_channels/self.layer_dim)) # (4, 4, 1024)
         future_states = self.predict_model(future_prediction_input, hidden_state)
 
         current_states_hs = current_states.unsqueeze(0).repeat(6, 1, 1, 1)

@@ -889,7 +889,20 @@ class LoadAnnoatationVQA():
                                             use_fast=False,
                                             )
         self.n_gen = n_gen
-        self.tokenizer.pad_token = self.tokenizer.unk_token
+        # 适配 Qwen/LLaMA tokenizer 的 pad_token 设置
+        tok_path = str(tokenizer).lower()
+        is_qwen = ('qwen' in tok_path) or ('qwen' in getattr(self.tokenizer, 'name_or_path', '').lower())
+        if is_qwen:
+            # Qwen 系列：无 unk_token，使用 eos_token 作为 pad
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+        else:
+            # 其他模型：使用 unk_token 作为 pad
+            if getattr(self.tokenizer, 'pad_token', None) is None:
+                if getattr(self.tokenizer, 'unk_token', None) is not None:
+                    self.tokenizer.pad_token = self.tokenizer.unk_token
+                else:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
         self.planning_qa_only = planning_qa_only
         self.planning_qa_last = planning_qa_last
         self.base_desc_path = base_desc_path
@@ -1089,7 +1102,20 @@ class LoadAnnoatationCriticalVQATest():
                                             padding_side="right",
                                             use_fast=False,
                                             )
-        self.tokenizer.pad_token = self.tokenizer.unk_token
+        # 适配 Qwen/LLaMA tokenizer 的 pad_token 设置
+        tok_path = str(tokenizer).lower()
+        is_qwen = ('qwen' in tok_path) or ('qwen' in getattr(self.tokenizer, 'name_or_path', '').lower())
+        if is_qwen:
+            # Qwen 系列：无 unk_token，使用 eos_token 作为 pad
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+        else:
+            # 其他模型：使用 unk_token 作为 pad
+            if getattr(self.tokenizer, 'pad_token', None) is None:
+                if getattr(self.tokenizer, 'unk_token', None) is not None:
+                    self.tokenizer.pad_token = self.tokenizer.unk_token
+                else:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
         self.load_type = load_type
         self.template = [
                         "What can you tell about the current driving conditions from the images?",

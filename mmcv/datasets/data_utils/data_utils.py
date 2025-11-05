@@ -3,8 +3,8 @@ import numpy as np
 from nuscenes.eval.common.utils import quaternion_yaw, Quaternion
 from nuscenes.utils.data_classes import Box as NuScenesBox
 import pyquaternion
+from mmcv.datasets.data_utils.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
-from .constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from . import conversation as conversation_lib
 import transformers
 import torch
@@ -299,7 +299,7 @@ def preprocess_llama_2(
     sep = "[/INST] "
     for conversation, target in zip(conversations, targets):
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
-
+        
         rounds = conversation.split(conv.sep2)
         cur_len = 1
         target[:cur_len] = IGNORE_INDEX
@@ -313,11 +313,40 @@ def preprocess_llama_2(
             parts[0] += sep
 
             if has_image:
-                round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+                # 图像+文本模式：动态计算特殊 token
+                rou_tokens_img = tokenizer_image_token(rou, tokenizer, return_tensors=None)
+                rou_text_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
+                rou_text_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
+                rou_num_special = len(rou_text_tokens_with) - len(rou_text_tokens_without)
+                round_len = len(rou_tokens_img) - rou_num_special
+                
+                inst_tokens_with_img = tokenizer_image_token(parts[0], tokenizer, return_tensors=None)
+                inst_text_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
+                inst_text_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
+                inst_num_special = len(inst_text_tokens_with) - len(inst_text_tokens_without)
+                instruction_len = len(inst_tokens_with_img) - inst_num_special
+                
+                num_special_tokens = inst_num_special
             else:
-                round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+                # 动态计算特殊 token 数量，适配不同 tokenizer (LLaMA/Qwen)
+                rou_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
+                rou_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
+                rou_num_special = len(rou_tokens_with) - len(rou_tokens_without)
+                round_len = len(rou_tokens_with) - rou_num_special
+                
+                inst_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
+                inst_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
+                inst_num_special = len(inst_tokens_with) - len(inst_tokens_without)
+                instruction_len = len(inst_tokens_with) - inst_num_special
+                
+                num_special_tokens = inst_num_special
+            
+            # 动态修复：在第一轮时自动调整 cur_len（适配不同 tokenizer）
+            if i == 0:
+                expected_cur_len = total_len - round_len
+                if cur_len != expected_cur_len:
+                    target[:expected_cur_len] = IGNORE_INDEX
+                    cur_len = expected_cur_len
 
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
@@ -327,9 +356,14 @@ def preprocess_llama_2(
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
+                # 详细调试信息
+                debug_info = f"has_image={has_image}, num_special={num_special_tokens if 'num_special_tokens' in locals() else 'N/A'}, "
+                debug_info += f"round_len={round_len if 'round_len' in locals() else 'N/A'}, "
+                debug_info += f"instruction_len={instruction_len if 'instruction_len' in locals() else 'N/A'}"
                 print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}. (ignored)\n"
+                    f"  DEBUG: {debug_info}\n"
+                    f"  Conversation snippet: {conversation[:100] if len(conversation) > 0 else 'empty'}..."
                 )
 
     return dict(
@@ -408,11 +442,40 @@ def preprocess_v1(
             parts[0] += sep
 
             if has_image:
-                round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+                # 图像+文本模式：动态计算特殊 token
+                rou_tokens_img = tokenizer_image_token(rou, tokenizer, return_tensors=None)
+                rou_text_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
+                rou_text_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
+                rou_num_special = len(rou_text_tokens_with) - len(rou_text_tokens_without)
+                round_len = len(rou_tokens_img) - rou_num_special
+                
+                inst_tokens_with_img = tokenizer_image_token(parts[0], tokenizer, return_tensors=None)
+                inst_text_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
+                inst_text_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
+                inst_num_special = len(inst_text_tokens_with) - len(inst_text_tokens_without)
+                instruction_len = len(inst_tokens_with_img) - inst_num_special
+                
+                num_special_tokens = inst_num_special
             else:
-                round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+                # 动态计算特殊 token 数量，适配不同 tokenizer (LLaMA/Qwen)
+                rou_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
+                rou_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
+                rou_num_special = len(rou_tokens_with) - len(rou_tokens_without)
+                round_len = len(rou_tokens_with) - rou_num_special
+                
+                inst_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
+                inst_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
+                inst_num_special = len(inst_tokens_with) - len(inst_tokens_without)
+                instruction_len = len(inst_tokens_with) - inst_num_special
+                
+                num_special_tokens = inst_num_special
+            
+            # 动态修复：在第一轮时自动调整 cur_len（适配不同 tokenizer）
+            if i == 0:
+                expected_cur_len = total_len - round_len
+                if cur_len != expected_cur_len:
+                    target[:expected_cur_len] = IGNORE_INDEX
+                    cur_len = expected_cur_len
 
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
@@ -423,9 +486,14 @@ def preprocess_v1(
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
                 if len(rounds) != 1:
+                    # 详细调试信息
+                    debug_info = f"has_image={has_image}, num_special={num_special_tokens if 'num_special_tokens' in locals() else 'N/A'}, "
+                    debug_info += f"round_len={round_len if 'round_len' in locals() else 'N/A'}, "
+                    debug_info += f"instruction_len={instruction_len if 'instruction_len' in locals() else 'N/A'}"
                     print(
-                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                        f" (ignored)"
+                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}. (ignored)\n"
+                        f"  DEBUG: {debug_info}\n"
+                        f"  Conversation snippet: {conversation[:100] if len(conversation) > 0 else 'empty'}..."
                     )
 
     return dict(
