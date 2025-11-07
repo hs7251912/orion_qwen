@@ -411,12 +411,45 @@ def locations(features, stride, pad_h, pad_w):
         return locations
     
 def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False):
+    """
+    Load language model based on the model path.
+    
+    Supports:
+    - Qwen2-VL: Uses OrionQwen2VlForCausalLM adapter
+    - Qwen2: Uses QwenForCausalLMAdapter
+    - LLaMA: Uses LlavaLlamaForCausalLM
+    """
     dtype = torch.float16 if fp16_infer else torch.float32
-    if 'qwen' in base_model.lower():
+    base_model_lower = base_model.lower()
+    
+    # Detect model type and load appropriate adapter
+    if 'qwen2-vl' in base_model_lower or 'qwen2vl' in base_model_lower:
+        # Use Orion's Qwen2-VL adapter
+        from .orion_qwen2vl import OrionQwen2VlForCausalLM
+        model = OrionQwen2VlForCausalLM.from_pretrained(
+            base_model, 
+            torch_dtype=torch.bfloat16,  # Qwen2-VL works best with bfloat16
+            device_map='cpu',
+            trust_remote_code=True,  # Qwen2-VL requires this
+            **lm_kwargs
+        )
+    elif 'qwen' in base_model_lower:
+        # Use standard Qwen adapter (for Qwen2-7B-Instruct, etc.)
         from .qwen_causallm import QwenForCausalLMAdapter
-        model = QwenForCausalLMAdapter.from_pretrained(base_model, torch_dtype=dtype, device_map='cpu', **lm_kwargs)
+        model = QwenForCausalLMAdapter.from_pretrained(
+            base_model, 
+            torch_dtype=dtype, 
+            device_map='cpu', 
+            **lm_kwargs
+        )
     else:
-        model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=dtype, device_map='cpu', **lm_kwargs)
+        # Use LLaVA-LLaMA adapter (default)
+        model = LlavaLlamaForCausalLM.from_pretrained(
+            base_model, 
+            torch_dtype=dtype, 
+            device_map='cpu', 
+            **lm_kwargs
+        )
 
     if fp16_infer:
         frozen = True
