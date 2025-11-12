@@ -10,6 +10,7 @@ import transformers
 import torch
 from typing import Dict, Optional, Sequence, List
 import copy
+import os
 
 def output_to_nusc_box(detection):
     """Convert the output to the box class in the nuScenes.
@@ -179,20 +180,72 @@ def obtain_map_info(nusc,
     map_mask = np.concatenate([erode[None], map_mask[None]], axis=0)
     return map_mask
 
-def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):# 插入-200
-    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
+def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+    """
+    适配多种 tokenizer 的图像 token 处理
+    支持: LLaVA (使用 -200) 和 Qwen2-VL (使用特殊 token 序列)
+    
+    Args:
+        prompt: 包含 <image> 占位符的文本
+        tokenizer: tokenizer 实例
+        image_token_index: LLaVA 使用的图像 token ID (默认 -200)
+        return_tensors: 返回格式 ('pt' 或 None)
+    """
+    # 环境开关：强制使用 LLaVA 的 -200 占位（用于兼容 Orion 旧路径）
+    force_legacy = os.getenv("ORION_FORCE_LEGACY_IMAGE_TOKEN", "0").lower() in ("1", "true", "yes", "y")
+    # 检测 tokenizer 类型
+    tokenizer_name = str(tokenizer.__class__.__name__).lower()
+    tokenizer_path = getattr(tokenizer, 'name_or_path', '').lower()
+    
+    is_qwen2vl = (
+        'qwen' in tokenizer_name or 
+        'qwen' in tokenizer_path
+    )
+    
+    if is_qwen2vl and not force_legacy:
+        # ============ Qwen2-VL 处理逻辑 ============
+        prompt_parts = prompt.split('<image>')
+        
+        try:
+            vision_start_id = tokenizer.convert_tokens_to_ids('<|vision_start|>')
+            vision_end_id = tokenizer.convert_tokens_to_ids('<|vision_end|>')
+            image_pad_id = tokenizer.convert_tokens_to_ids('<|image_pad|>')
+        except (KeyError, AttributeError):
+            # 使用硬编码的 token IDs 作为 fallback
+            vision_start_id = 151652
+            vision_end_id = 151653
+            image_pad_id = 151655
+            
+        input_ids = []
+        
+        for i, part in enumerate(prompt_parts):
+            if part:
+                part_ids = tokenizer(part, add_special_tokens=False).input_ids
+                input_ids.extend(part_ids)
+            
+            if i < len(prompt_parts) - 1:
+                # 插入: <|vision_start|> <|image_pad|> <|vision_end|>
+                input_ids.extend([vision_start_id, image_pad_id, vision_end_id])
+        
+        # 确保添加 BOS token
+        if tokenizer.bos_token_id is not None and (not input_ids or input_ids[0] != tokenizer.bos_token_id):
+            input_ids.insert(0, tokenizer.bos_token_id)
+    
+    else:
+        # ============ LLaVA 处理逻辑（保持不变）============
+        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
 
-    def insert_separator(X, sep):
-        return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
+        def insert_separator(X, sep):
+            return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
 
-    input_ids = []
-    offset = 0
-    if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
-        offset = 1
-        input_ids.append(prompt_chunks[0][0])
+        input_ids = []
+        offset = 0
+        if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
+            offset = 1
+            input_ids.append(prompt_chunks[0][0])
 
-    for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
-        input_ids.extend(x[offset:])
+        for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+            input_ids.extend(x[offset:])
 
     if return_tensors is not None:
         if return_tensors == 'pt':
@@ -432,6 +485,13 @@ def preprocess_v1(
         rounds = conversation.split(conv.sep2)
         cur_len = 1
         target[:cur_len] = IGNORE_INDEX
+        
+        # ============================================
+        # 🔧 步骤 1: 预先计算所有轮次的长度
+        # ============================================
+        round_lengths = []
+        instruction_lengths = []
+        
         for i, rou in enumerate(rounds):
             if rou == "":
                 break
@@ -470,30 +530,47 @@ def preprocess_v1(
                 
                 num_special_tokens = inst_num_special
             
-            # 动态修复：在第一轮时自动调整 cur_len（适配不同 tokenizer）
-            if i == 0:
-                expected_cur_len = total_len - round_len
-                if cur_len != expected_cur_len:
-                    target[:expected_cur_len] = IGNORE_INDEX
-                    cur_len = expected_cur_len
-
+            round_lengths.append(round_len)
+            instruction_lengths.append(instruction_len)
+        
+        # ============================================
+        # 🔧 步骤 2: 修正第一轮的 cur_len
+        # ============================================
+        if len(round_lengths) > 0:
+            expected_cur_len = total_len - sum(round_lengths)
+            if cur_len != expected_cur_len:
+                target[:expected_cur_len] = IGNORE_INDEX
+                cur_len = expected_cur_len
+        
+        # ============================================
+        # 🔧 步骤 3: 逐轮处理，在最后一轮进行精确修正
+        # ============================================
+        num_valid_rounds = len(round_lengths)
+        for i in range(num_valid_rounds):
+            round_len = round_lengths[i]
+            instruction_len = instruction_lengths[i]
+            
+            # 关键修复：在最后一轮使用精确的剩余长度
+            if i == num_valid_rounds - 1:
+                remaining_len = total_len - cur_len
+                if remaining_len != round_len:
+                    round_len = remaining_len
+                    if instruction_len > round_len:
+                        instruction_len = max(0, round_len - 1)
+            
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
-
             cur_len += round_len
         target[cur_len:] = IGNORE_INDEX
 
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
-                if len(rounds) != 1:
-                    # 详细调试信息
-                    debug_info = f"has_image={has_image}, num_special={num_special_tokens if 'num_special_tokens' in locals() else 'N/A'}, "
-                    debug_info += f"round_len={round_len if 'round_len' in locals() else 'N/A'}, "
-                    debug_info += f"instruction_len={instruction_len if 'instruction_len' in locals() else 'N/A'}"
+                if len(rounds) > 1:
                     print(
-                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}. (ignored)\n"
-                        f"  DEBUG: {debug_info}\n"
-                        f"  Conversation snippet: {conversation[:100] if len(conversation) > 0 else 'empty'}..."
+                        f"ERROR: tokenization mismatch after fix: {cur_len} vs. {total_len}. "
+                        f"This should not happen! Sample IGNORED.\n"
+                        f"  num_rounds={num_valid_rounds}, "
+                        f"  Conversation snippet: {conversation[:100]}..."
                     )
 
     return dict(

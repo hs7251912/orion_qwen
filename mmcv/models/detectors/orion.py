@@ -206,6 +206,16 @@ class Orion(MVXTwoStageDetector):
         if lm_head is not None:
             lm_kwargs = dict(use_gen_token=use_gen_token,use_critical_qa=use_critical_qa)
             self.lm_head = load_model(lm_head, use_lora, frozen, lm_kwargs, fp16_infer)
+            # 建立 BEV 特征到 LLM 隐空间的投影
+            # 🔧 修复: 从配置中获取实际的 BEV 特征维度，不再硬编码 4096
+            target_hidden = getattr(self.lm_head.config, 'hidden_size', None)
+            bev_dim = pts_bbox_head.get('out_dims', 4096) if pts_bbox_head else 4096
+            
+            self.bev_projection = nn.Identity()
+            if target_hidden is not None and target_hidden != bev_dim:
+                self.bev_projection = nn.Linear(bev_dim, target_hidden)
+                print(f"[Orion] 创建 BEV 投影层: {bev_dim} -> {target_hidden}")
+            
         if use_gen_token:
             add_special_token([EGO_WAYPOINT_TOKEN], tokenizer = self.tokenizer, model = self.lm_head)
             self.lm_head.config.waypoint_token_idx = self.tokenizer(EGO_WAYPOINT_TOKEN, add_special_tokens=False).input_ids[0]
@@ -587,7 +597,11 @@ class Orion(MVXTwoStageDetector):
 
         if self.with_lm_head:
             if self.use_gen_token:
-                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
+                # 对齐到 LLM 隐空间维度（如 Qwen2-VL 的 3584）
+                if hasattr(self, 'bev_projection'):
+                    vision_embeded_obj = self.bev_projection(vision_embeded_obj)
+                    vision_embeded_map = self.bev_projection(vision_embeded_map)
+                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1)
                 vlm_loss, ego_feature = self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False, return_ego_feature=True)
                 if self.mix_qa_training:
                     dummy_ego_feature = self.lm_head.get_model().embed_tokens(torch.tensor([[self.lm_head.config.waypoint_token_idx] for _ in range(B)]).cuda())
@@ -706,7 +720,11 @@ class Orion(MVXTwoStageDetector):
                     losses.update(wp_loss=wp_loss)
             else:
                 waypoint = None
-                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
+                # 对齐到 LLM 隐空间维度（如 Qwen2-VL 的 3584）
+                if hasattr(self, 'bev_projection'):
+                    vision_embeded_obj = self.bev_projection(vision_embeded_obj)
+                    vision_embeded_map = self.bev_projection(vision_embeded_map)
+                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1)
                 vlm_loss= self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False)
                 losses.update(vlm_loss=vlm_loss[0])
         return losses
@@ -789,7 +807,11 @@ class Orion(MVXTwoStageDetector):
             
         if self.with_lm_head:
             history_input_output_id = []
-            vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
+            # 对齐到 LLM 隐空间维度（如 Qwen2-VL 的 3584）
+            if hasattr(self, 'bev_projection'):
+                vision_embeded_obj = self.bev_projection(vision_embeded_obj)
+                vision_embeded_map = self.bev_projection(vision_embeded_map)
+            vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1)
             for i, input_ids in enumerate(data['input_ids'][0]):
                 input_ids = input_ids.unsqueeze(0)
                 special_token_inputs = False

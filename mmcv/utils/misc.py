@@ -426,6 +426,7 @@ def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False)
     if 'qwen2-vl' in base_model_lower or 'qwen2vl' in base_model_lower:
         # Use Orion's Qwen2-VL adapter
         from .orion_qwen2vl import OrionQwen2VlForCausalLM
+        
         model = OrionQwen2VlForCausalLM.from_pretrained(
             base_model, 
             torch_dtype=torch.bfloat16,  # Qwen2-VL works best with bfloat16

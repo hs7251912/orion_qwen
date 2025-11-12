@@ -14,6 +14,10 @@ from .llava_arch import LlavaMetaForCausalLM
 class QwenVLMConfig(Qwen2Config):
     """自定义 Qwen VLM 配置类，用于序列化和注册"""
     model_type = "qwen_vlm"
+    # 可选：Qwen2-VL 特殊视觉 token id（若未设置，将在拼接阶段使用默认回退值）
+    vision_start_token_id: int = None
+    vision_end_token_id: int = None
+    image_pad_token_id: int = None
 
 
 class QwenForCausalLMAdapter(Qwen2ForCausalLM, LlavaMetaForCausalLM):
@@ -63,7 +67,7 @@ class QwenForCausalLMAdapter(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 
         if inputs_embeds is None:
             input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, new_input_ids = \
-                self.prepare_inputs_labels_for_multimodal(
+                self.prepare_inputs_labels_for_qwen2vl(
                     input_ids, position_ids, attention_mask, past_key_values, labels, images, image_sizes
                 )
         else:
@@ -153,7 +157,7 @@ class QwenForCausalLMAdapter(Qwen2ForCausalLM, LlavaMetaForCausalLM):
             raise NotImplementedError("`inputs_embeds` is not supported")
         if images is not None:
             inputs, position_ids, attention_mask, _, inputs_embeds, _, _ = \
-                self.prepare_inputs_labels_for_multimodal(
+                self.prepare_inputs_labels_for_qwen2vl(
                     inputs, position_ids, attention_mask, None, None, images, image_sizes=image_sizes
                 )
         else:
@@ -167,7 +171,7 @@ class QwenForCausalLMAdapter(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
         inputs, position_ids, attention_mask, _, inputs_embeds, _, new_input_ids = \
-            self.prepare_inputs_labels_for_multimodal(
+            self.prepare_inputs_labels_for_qwen2vl(
                 inputs, position_ids, attention_mask, None, None, images, image_sizes=image_sizes
             )
         outputs = self.model(
