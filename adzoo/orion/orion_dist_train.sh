@@ -29,7 +29,7 @@ python -m torch.distributed.launch \
     --nnodes=${NNODES} \
     --node_rank=${RANK} \
     $(dirname "$0")/train.py \
-    $CFG \
+    --config $CFG \
     --launcher pytorch ${@:3} \
     --deterministic \
     --work-dir ${WORK_DIR} \

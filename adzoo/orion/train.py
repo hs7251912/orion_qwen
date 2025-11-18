@@ -35,7 +35,8 @@ sys.path.append('')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')
-    parser.add_argument('--config', default='/root/autodl-tmp/Orion-main/adzoo/orion/configs/orion_qwen2vl_stage1_train_optimized.py' ,help='train config file path')
+    parser.add_argument('--config', default='/root/autodl-tmp/Orion-main/adzoo/orion/configs/orion_qwen2vl_stage1_train.py' ,help='train config file path')
+    # parser.add_argument('config',help='train config file path')
     parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument(
         '--resume-from', help='the checkpoint file to resume from')
