@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore")
 def parse_args():
     parser = argparse.ArgumentParser(
         description='MMDet test (and eval) a model')
-    parser.add_argument('--config', default="./adzoo/orion/configs/orion_stage3_infer.py", help='test config file path')
+    parser.add_argument('--config', default="./adzoo/orion/configs/orion_stage3_cot.py", help='test config file path')
     parser.add_argument('--checkpoint', default="/root/autodl-tmp/Orion_modify/ckpts/Orion.pth", help='checkpoint file')
     parser.add_argument('--json_dir', help='json parent dir name file') # NOTE: json file parent folder name
     parser.add_argument('--out', help='output result file in pickle format')
@@ -96,6 +96,8 @@ def parse_args():
     parser.add_argument('--vis-gt', action='store_true', default=False, help='visualize ground truth trajectory (default: True)')
     parser.add_argument('--no-vis-pred', dest='vis_pred', action='store_false', help='disable predicted trajectory visualization')
     parser.add_argument('--no-vis-gt', dest='vis_gt', action='store_false', help='disable ground truth trajectory visualization')
+    parser.add_argument('--save-image', action='store_true', default=True, help='save visualization images (default: True)')
+    parser.add_argument('--no-save-image', dest='save_image', action='store_false', help='do not save visualization images, only save JSON')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
@@ -115,10 +117,10 @@ def main():
     args = parse_args()
 
     assert args.out or args.eval or args.format_only or args.show \
-        or args.show_dir, \
+        or args.show_dir or args.vis_traj, \
         ('Please specify at least one operation (save/eval/format/show the '
          'results / save the results) with the argument "--out", "--eval"'
-         ', "--format-only", "--show" or "--show-dir"')
+         ', "--format-only", "--show", "--show-dir" or "--vis-traj"')
 
     if args.eval and args.format_only:
         raise ValueError('--eval and --format_only cannot be both specified')
@@ -175,12 +177,8 @@ def main():
     # build the dataloader
     dataset = build_dataset(cfg.data.test)
 
-    # DEBUG: Print a sample path to see the actual format
-    if dataset.data_infos:
-        print("DEBUG: Sample data path from dataset:", dataset.data_infos[0]['sensors']['CAM_FRONT']['data_path'])
-        
     # Filter the dataset to run on specific data (set to None to disable filtering)
-    specific_data_path = "ConstructionObstacleTwoWays_Town12_Route1093_Weather1"  # Change this to a scene name like "CrossingBicycleFlow_Town12_Route1065_Weather25" to filter
+    specific_data_path = "PedestrianCrossing_Town13_Route747_Weather19"  # Change this to a scene name like "CrossingBicycleFlow_Town12_Route1065_Weather25" to filter
     if specific_data_path:
         print(f"Filtering dataset for: {specific_data_path}")
         filtered_infos = [
@@ -189,10 +187,13 @@ def main():
         ]
         if not filtered_infos:
             raise ValueError(f"No data found for the specified path: {specific_data_path}")
-        dataset.data_infos = filtered_infos
+        dataset.data_infos = filtered_infos[50:90]
         print(f"Found {len(dataset.data_infos)} samples.")
     else:
         print(f"Running on all {len(dataset.data_infos)} samples from the dataset.")
+    
+    # dataset.data_infos = dataset.data_infos[:5]
+    # print(f"Running on first {len(dataset.data_infos)} samples from the dataset.")
     
     data_loader = build_dataloader(
         dataset,
@@ -240,9 +241,6 @@ def main():
 
 
     rank, _ = get_dist_info()
-    print("--------------------------------")
-    print("Rank: ", rank)
-    print("--------------------------------")
     if rank == 0:
         if args.out:
             print(f'\nwriting results to {args.out}')
@@ -270,7 +268,7 @@ def main():
             print("Visualizing trajectories...")
             from adzoo.orion.apis.visualizer import visualize_trajectories
             visualize_trajectories(outputs, data_loader, args.vis_save_dir, 
-                                 show_pred=args.vis_pred, show_gt=args.vis_gt)
+                                 show_pred=args.vis_pred, show_gt=args.vis_gt, save_image=args.save_image)
     
         # # # NOTE: record to json
         # json_path = args.json_dir

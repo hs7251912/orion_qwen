@@ -2,9 +2,81 @@ import os
 import cv2
 import numpy as np
 import torch
+import json
 from mmcv.utils import mkdir_or_exist, ProgressBar
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+
+
+def get_text_box_height(text, width, title="", font_scale=0.6, thickness=1, padding=10, line_spacing=1.5):
+    """
+    Calculates the height required for the text box.
+    """
+    (text_width, text_height), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, font_scale + 0.1, thickness + 1)
+    max_line_width = width - 2 * padding
+    
+    wrapped_text = []
+    paragraphs = text.split('\n')
+    for paragraph in paragraphs:
+        words = paragraph.split(' ')
+        line = ''
+        for word in words:
+            (w, h), _ = cv2.getTextSize(line + ' ' + word, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            if w > max_line_width:
+                wrapped_text.append(line)
+                line = word
+            else:
+                line = line + ' ' + word if line else word
+        wrapped_text.append(line)
+    
+    num_lines = len(wrapped_text)
+    line_height = int(text_height * line_spacing)
+    box_height = line_height * (num_lines + 1) + 2 * padding + 10
+    return box_height
+
+
+def draw_text_box(img, text, pos, title="", bg_color=(0, 128, 0), text_color=(255, 255, 255), font_scale=0.6, thickness=1, padding=10, line_spacing=1.5):
+    """
+    Draws a text box with a title and wrapped text on an image.
+    """
+    (text_width, text_height), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, font_scale + 0.1, thickness + 1)
+    
+    x, y = pos
+    
+    # Text wrapping
+    wrapped_text = []
+    max_line_width = img.shape[1] - x - 2 * padding
+    paragraphs = text.split('\n')
+    for paragraph in paragraphs:
+        words = paragraph.split(' ')
+        line = ''
+        for word in words:
+            (w, h), _ = cv2.getTextSize(line + ' ' + word, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            if w > max_line_width:
+                wrapped_text.append(line)
+                line = word
+            else:
+                line = line + ' ' + word if line else word
+        wrapped_text.append(line)
+    
+    # Box dimensions
+    num_lines = len(wrapped_text)
+    line_height = int(text_height * line_spacing)
+    box_height = line_height * (num_lines + 1) + 2 * padding + 10  # +1 for title
+    box_width = img.shape[1] - 2 * x # Full width with padding
+    
+    # Draw background
+    cv2.rectangle(img, (x, y), (x + box_width, y + box_height), bg_color, -1)
+    
+    # Draw title
+    cv2.putText(img, title, (x + padding, y + padding + text_height), 
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale + 0.1, text_color, thickness + 1, cv2.LINE_AA)
+    
+    # Draw text
+    for i, line in enumerate(wrapped_text):
+        cv2.putText(img, line.strip(), (x + padding, y + padding + text_height + (i + 1) * line_height), 
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, thickness, cv2.LINE_AA)
+    return img, y + box_height
 
 
 def project_3d_to_2d(points_3d, lidar2img, min_depth=0.1):
@@ -97,7 +169,7 @@ def compute_future_track(data_info, dataset, actual_idx, future_frames=6, sample
     return np.array(future_track)
 
 
-def visualize_trajectory(image, traj_2d, save_path, sample_idx=0, cmd_idx=None, gt_traj_2d=None):
+def visualize_trajectory(image, traj_2d, save_path, sample_idx=0, gt_traj_2d=None, cot_text=None, save_image=True):
     """Draw trajectory on image and save.
     
     Args:
@@ -105,8 +177,9 @@ def visualize_trajectory(image, traj_2d, save_path, sample_idx=0, cmd_idx=None, 
         traj_2d (torch.Tensor): 2D predicted trajectory points in pixel coordinates [num_points, 2]
         save_path (str): Path to save the visualization
         sample_idx (int): Sample index for filename
-        cmd_idx (int, optional): Command index for the trajectory
         gt_traj_2d (np.ndarray, optional): 2D ground truth trajectory points in pixel coordinates [num_points, 2]
+        cot_text (str, optional): Chain of thought text from the model.
+        save_image (bool): Whether to save the visualization image (default: True)
     """
     # Convert image to BGR for OpenCV
     img_vis = image.copy()
@@ -217,12 +290,6 @@ def visualize_trajectory(image, traj_2d, save_path, sample_idx=0, cmd_idx=None, 
     cv2.putText(img_vis, f'Sample: {sample_idx}', (20, 60), 
                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
-    if cmd_idx is not None:
-        cmd_names = ['Turn Right', 'Go Straight', 'Turn Left']
-        cmd_name = cmd_names[cmd_idx] if 0 <= cmd_idx < len(cmd_names) else f'Command {cmd_idx}'
-        cv2.putText(img_vis, f'Command: {cmd_name}', (20, 90), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    
     # Add legend based on what's being displayed
     legend_y = 120
     if traj_2d is not None and gt_traj_2d is not None:
@@ -242,11 +309,106 @@ def visualize_trajectory(image, traj_2d, save_path, sample_idx=0, cmd_idx=None, 
         cv2.putText(img_vis, 'Ground Truth Only', (20, legend_y + 5), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
     
+    # Add CoT text box if provided
+    if cot_text and save_image:
+        cot_text_str = ''
+        # Handle if cot_text is a single dict (not in list)
+        if isinstance(cot_text, list):
+            for text in cot_text:
+                if isinstance(text, dict):
+                    q = text.get('Q', '')
+                    a = text.get('A', [])
+                    if isinstance(a, list):
+                        a = " ".join(a)
+                    elif not isinstance(a, str):
+                        a = str(a)
+                    q = str(q).replace('\\n', ' ')
+                    a = str(a).replace('\\n', ' ')
+                    if cot_text_str:
+                         cot_text_str += "\n"
+                    cot_text_str += f"Q: {q}\nA: {a}"
+            
+            if cot_text_str:
+                cot_text = cot_text_str
+        
+        cot_text = str(cot_text)
+        
+        # Create a combined image with space for the text box at the bottom
+        # Calculate required height first
+        box_height = get_text_box_height(cot_text, img_vis.shape[1], title="Chain of Causation")
+        
+        combined_height = img_vis.shape[0] + box_height
+        combined_img = np.full((combined_height, img_vis.shape[1], 3), 255, dtype=np.uint8) # White background
+        combined_img[0:img_vis.shape[0], 0:img_vis.shape[1]] = img_vis
+        
+        # Draw the text box
+        draw_text_box(combined_img, cot_text, (0, img_vis.shape[0]), title="Chain of Causation")
+        img_vis = combined_img
+
     # Save image
-    cv2.imwrite(save_path, img_vis)
+    if save_image:
+        cv2.imwrite(save_path, img_vis)
+
+    # Save CoT text to JSON
+    if cot_text:
+        # Parse cot_text into structured Q&A format
+        qa_pairs = []
+        if isinstance(cot_text, list):
+            for text in cot_text:
+                if isinstance(text, dict):
+                    q = text.get('Q', '')
+                    a = text.get('A', [])
+                    if isinstance(a, list):
+                        a = " ".join(a)
+                    elif not isinstance(a, str):
+                        a = str(a)
+                    qa_pairs.append({
+                        "Q": str(q),
+                        "A": str(a)
+                    })
+        else:
+            # If cot_text is a string, try to parse it
+            cot_text_str = str(cot_text)
+            # Split by "Q:" to get individual Q&A pairs
+            parts = cot_text_str.split('\nQ: ')
+            for i, part in enumerate(parts):
+                if not part.strip():
+                    continue
+                # For the first part, it might start with "Q: " already
+                if i == 0 and part.startswith('Q: '):
+                    part = part[3:]  # Remove "Q: " prefix
+                
+                # Split by "\nA: " to separate question and answer
+                if '\nA: ' in part:
+                    q, a = part.split('\nA: ', 1)
+                    qa_pairs.append({
+                        "Q": q.strip(),
+                        "A": a.strip()
+                    })
+        
+        json_data = {
+            "image_path": save_path,
+            "cot_text": qa_pairs
+        }
+        # Create json_result directory if it doesn't exist
+        json_dir = "./json_result"
+        mkdir_or_exist(json_dir)
+        
+        # Extract the relative path structure from save_path
+        img_filename = os.path.basename(save_path)
+        img_basename = os.path.splitext(img_filename)[0]
+        parent_folder = os.path.basename(os.path.dirname(save_path))
+        
+        json_save_folder = os.path.join(json_dir, parent_folder)
+        mkdir_or_exist(json_save_folder)
+        
+        json_path = os.path.join(json_save_folder, f"{img_basename}.json")
+        
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, indent=4, ensure_ascii=False)
 
 
-def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_gt=True):
+def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_gt=True, save_image=True):
     """Main function to visualize trajectories from model outputs.
     
     Args:
@@ -255,6 +417,7 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
         save_dir (str): Directory to save visualization results
         show_pred (bool): Whether to show predicted trajectory (default: True)
         show_gt (bool): Whether to show ground truth trajectory (default: True)
+        save_image (bool): Whether to save visualization images (default: True)
     """
     mkdir_or_exist(save_dir)
     
@@ -277,11 +440,16 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
     for idx, bbox_result in enumerate(bbox_results):
         try:
             # Check if trajectory predictions exist
-            # ego_fut_preds is stored directly in bbox_result, not in pts_bbox
             if 'ego_fut_preds' not in bbox_result['pts_bbox']:
                 prog_bar.update()
                 continue
-                
+            
+            # Extract CoT text
+            if "text_out" in bbox_result and len(bbox_result["text_out"]) > 0:
+                cot_text = bbox_result["text_out"]
+            else:
+                cot_text = "No CoT available."
+            
             ego_fut_preds = bbox_result['pts_bbox']['ego_fut_preds']
             
             # Skip if no valid predictions
@@ -290,8 +458,8 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
                 continue
             
             # Get ego_fut_cmd if available to select the correct trajectory
-            if 'ego_fut_cmd' in bbox_result:
-                ego_fut_cmd = bbox_result['ego_fut_cmd']
+            if 'ego_fut_cmd' in bbox_result['pts_bbox']:
+                ego_fut_cmd = bbox_result['pts_bbox']['ego_fut_cmd']
                 # ego_fut_cmd shape: [1, 3] (batch, num_commands)
                 if ego_fut_cmd.ndim >= 2:
                     ego_fut_cmd = ego_fut_cmd[0, 0] if ego_fut_cmd.ndim == 3 else ego_fut_cmd[0]
@@ -305,9 +473,6 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
                 ego_fut_pred = ego_fut_preds[ego_fut_cmd_idx]  # [time_steps, 2]
             else:
                 ego_fut_pred = ego_fut_preds  # Already [time_steps, 2]
-            
-            # Apply cumsum to get absolute positions (predictions are deltas)
-            ego_fut_pred = ego_fut_pred.cumsum(dim=-2)  # [time_steps, 2]
             
             # Map index to actual dataset index if using Subset
             actual_idx = subset_indices[idx] if subset_indices is not None else idx
@@ -351,7 +516,6 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
             # Get camera transformation matrix
-            # Check if we have the required camera parameters
             if 'intrinsic' not in cam_info or 'cam2ego' not in cam_info:
                 print(f"Warning: Missing camera transformation for sample {idx}")
                 prog_bar.update()
@@ -420,7 +584,7 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
                     future_track = compute_future_track(data_info, actual_dataset, actual_idx, 
                                                         future_frames=6, sample_rate=1)
                     if future_track is not None:
-                        # future_track is in lidar coords with format [X, Y] (already correct order from world2lidar transform)
+                        # future_track is in lidar coords with format [X, Y]
                         # Create 3D points in lidar coords
                         gt_traj_3d_lidar = np.zeros((len(future_track), 3), dtype=np.float32)
                         gt_traj_3d_lidar[:, :2] = future_track  # X, Y in lidar
@@ -444,10 +608,18 @@ def visualize_trajectories(outputs, data_loader, save_dir, show_pred=True, show_
                 continue
             
             # Save visualization (with prediction and/or GT based on settings)
-            save_path = os.path.join(save_dir, f'trajectory_{idx:06d}.jpg')
-            visualize_trajectory(image, traj_2d_proj, save_path, idx, ego_fut_cmd_idx, gt_traj_2d_proj)
+            data_folder = data_info['folder']
+            img_name = img_filename.split('/')[-1]
+            save_folder = os.path.join(save_dir, data_folder)
+            save_path = os.path.join(save_dir, data_folder, img_name)  
+            # Ensure the directory exists
+            mkdir_or_exist(save_folder)
+            
+            visualize_trajectory(image, traj_2d_proj, save_path, idx, gt_traj_2d_proj, cot_text, save_image=save_image)
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"Error processing sample {idx}: {str(e)}")
             
         prog_bar.update()
