@@ -16,6 +16,7 @@ from mmcv.datasets import build_dataset, build_dataloader, replace_ImageToTensor
 import time
 import os.path as osp
 from adzoo.orion.apis.test import custom_multi_gpu_test, single_gpu_test
+import json
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -213,6 +214,8 @@ def main():
 
     rank, _ = get_dist_info()
     if rank == 0:
+        # VQA predictions are already saved during inference in apis/test.py
+        
         if args.out:
             print(f'\nwriting results to {args.out}')
         kwargs = {} if args.eval_options is None else args.eval_options
@@ -249,6 +252,15 @@ def main():
         # with open(json_path+'/metric_record.json', "w", encoding="utf-8") as f2:
         #     json.dump(metric_all, f2, indent=4)
         # print('save to json done')
+
+# NOTE: VQA results are now saved in real-time during inference in adzoo/orion/apis/test.py
+# The save_vqa_results function below is kept for reference but is no longer used
+# def save_vqa_results(outputs, dataset, save_root='/root/autodl-tmp/Orion-main/data/chat-B2D/val_answer'):
+#     """
+#     [DEPRECATED] Save VQA predictions to JSON files after all inference is complete.
+#     VQA results are now saved in real-time during inference for better memory efficiency.
+#     """
+#     pass
 
 custom_fp16 = dict(
                     map_head=False,
