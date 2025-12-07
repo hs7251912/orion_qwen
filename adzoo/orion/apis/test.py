@@ -128,24 +128,6 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
         with torch.no_grad():
             result = model(data,return_loss=False)
             
-            # Debug: Check result structure for the first few iterations (only rank 0)
-            if rank == 0 and i < 3:
-                print(f'\n[DEBUG Rank {rank} Iter {i}] Result type: {type(result)}')
-                if isinstance(result, dict):
-                    print(f'[DEBUG Rank {rank} Iter {i}] Result keys: {result.keys()}')
-                    if 'bbox_results' in result.keys():
-                        print(f'[DEBUG Rank {rank} Iter {i}] bbox_results length: {len(result["bbox_results"])}')
-                        if len(result['bbox_results']) > 0:
-                            print(f'[DEBUG Rank {rank} Iter {i}] First bbox_result keys: {result["bbox_results"][0].keys()}')
-                            print(f'[DEBUG Rank {rank} Iter {i}] Has text_out: {"text_out" in result["bbox_results"][0]}')
-                elif isinstance(result, list):
-                    print(f'[DEBUG Rank {rank} Iter {i}] Result length: {len(result)}')
-                    if len(result) > 0:
-                        print(f'[DEBUG Rank {rank} Iter {i}] First element type: {type(result[0])}')
-                        if isinstance(result[0], dict):
-                            print(f'[DEBUG Rank {rank} Iter {i}] First element keys: {result[0].keys()}')
-                            print(f'[DEBUG Rank {rank} Iter {i}] Has text_out: {"text_out" in result[0]}')
-            
             # encode mask results and save VQA
             if isinstance(result, dict):
                 if 'bbox_results' in result.keys():
@@ -155,7 +137,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                     # Save VQA results immediately (only rank 0 to avoid conflicts)
                     if rank == 0:
                         for batch_idx, single_result in enumerate(bbox_result):
-                            current_sample_idx = sample_idx + batch_idx * world_size
+                            current_sample_idx = sample_idx + batch_idx
                             if current_sample_idx < len(dataset.data_infos):
                                 data_info = dataset.data_infos[current_sample_idx]
                                 # Show verbose output every 10 samples, or always show if less than 50 total
@@ -165,7 +147,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                                 elif verbose:
                                     print(f'⊘ Sample {current_sample_idx}: No VQA output')
                     
-                    sample_idx += batch_size * world_size
+                    sample_idx += batch_size
                     bbox_results.extend(bbox_result)
                 if 'mask_results' in result.keys() and result['mask_results'] is not None:
                     mask_result = custom_encode_mask_results(result['mask_results'])
@@ -178,7 +160,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                 # Save VQA results immediately (only rank 0 to avoid conflicts)
                 if rank == 0:
                     for batch_idx, single_result in enumerate(result):
-                        current_sample_idx = sample_idx + batch_idx * world_size
+                        current_sample_idx = sample_idx + batch_idx
                         if current_sample_idx < len(dataset.data_infos):
                             data_info = dataset.data_infos[current_sample_idx]
                             # Show verbose output every 10 samples, or always show if less than 50 total
@@ -189,7 +171,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                                 print(f'⊘ Sample {current_sample_idx}: No VQA output')
                 
                 bbox_results.extend(result)
-                sample_idx += batch_size * world_size
+                sample_idx += batch_size
         if rank == 0:
             for _ in range(batch_size * world_size):
                 prog_bar.update()
@@ -303,24 +285,6 @@ def single_gpu_test(model, data_loader):
         with torch.no_grad():
             result = model(data,return_loss=False)
             
-            # Debug: Check result structure for the first few iterations
-            if i < 3:
-                print(f'\n[DEBUG Iter {i}] Result type: {type(result)}')
-                if isinstance(result, dict):
-                    print(f'[DEBUG Iter {i}] Result keys: {result.keys()}')
-                    if 'bbox_results' in result.keys():
-                        print(f'[DEBUG Iter {i}] bbox_results length: {len(result["bbox_results"])}')
-                        if len(result['bbox_results']) > 0:
-                            print(f'[DEBUG Iter {i}] First bbox_result keys: {result["bbox_results"][0].keys()}')
-                            print(f'[DEBUG Iter {i}] Has text_out: {"text_out" in result["bbox_results"][0]}')
-                elif isinstance(result, list):
-                    print(f'[DEBUG Iter {i}] Result length: {len(result)}')
-                    if len(result) > 0:
-                        print(f'[DEBUG Iter {i}] First element type: {type(result[0])}')
-                        if isinstance(result[0], dict):
-                            print(f'[DEBUG Iter {i}] First element keys: {result[0].keys()}')
-                            print(f'[DEBUG Iter {i}] Has text_out: {"text_out" in result[0]}')
-
             # encode mask results and save VQA
             if isinstance(result, dict):
                 if 'bbox_results' in result.keys():
