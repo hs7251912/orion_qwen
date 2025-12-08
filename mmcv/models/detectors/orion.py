@@ -194,6 +194,37 @@ class Orion(MVXTwoStageDetector):
         if lm_head is not None:
             lm_kwargs = dict(use_gen_token=use_gen_token,use_critical_qa=use_critical_qa)
             self.lm_head = load_model(lm_head, use_lora, frozen, lm_kwargs, fp16_infer)
+            # ============ 打印 self.lm_head 网络结构 ============
+            print("\n" + "="*80)
+            print("LM_HEAD 网络结构:")
+            print("="*80)
+            print(self.lm_head)
+            print("\n" + "-"*80)
+            print("LM_HEAD 配置信息:")
+            print("-"*80)
+            print(f"模型类型: {type(self.lm_head).__name__}")
+            print(f"配置类型: {type(self.lm_head.config).__name__}")
+            print(f"隐藏层维度: {self.lm_head.config.hidden_size}")
+            print(f"词表大小: {self.lm_head.config.vocab_size}")
+            print(f"层数: {self.lm_head.config.num_hidden_layers}")
+            print(f"注意力头数: {self.lm_head.config.num_attention_heads}")
+            if hasattr(self.lm_head.config, 'waypoint_token_idx'):
+                print(f"Waypoint Token索引: {self.lm_head.config.waypoint_token_idx}")
+            print(f"使用生成Token: {use_gen_token}")
+            print(f"使用关键QA: {use_critical_qa}")
+            
+            # 统计参数量
+            total_params = sum(p.numel() for p in self.lm_head.parameters())
+            trainable_params = sum(p.numel() for p in self.lm_head.parameters() if p.requires_grad)
+            print("\n" + "-"*80)
+            print("LM_HEAD 参数统计:")
+            print("-"*80)
+            print(f"总参数量: {total_params:,} ({total_params/1e6:.2f}M)")
+            print(f"可训练参数: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
+            print(f"冻结参数: {total_params - trainable_params:,} ({(total_params - trainable_params)/1e6:.2f}M)")
+            print(f"可训练比例: {trainable_params/total_params*100:.2f}%")
+            print("="*80 + "\n")
+            
         if use_gen_token:
             add_special_token([EGO_WAYPOINT_TOKEN], tokenizer = self.tokenizer, model = self.lm_head)
             self.lm_head.config.waypoint_token_idx = self.tokenizer(EGO_WAYPOINT_TOKEN, add_special_tokens=False).input_ids[0]
