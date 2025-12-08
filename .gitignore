@@ -1,7 +1,16 @@
 /assets/
 *.so
-/mmcv/
 /data/
 /mmcv.egg-info/
 /work_dirs/
 /build/
+# Python compiled files
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+
+# mmcv compiled extensions
+/mmcv/**/*.so
+/mmcv/**/*.o
+/mmcv/**/*.a
