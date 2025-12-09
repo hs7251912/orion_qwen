@@ -60,7 +60,7 @@ class B2DOrionDataset(Custom3DDataset):
         self.MAPCLASSES = list(self.map_element_class.keys())
         self.NUM_MAPCLASSES = len(self.MAPCLASSES)
         self.map_eval_use_same_gt_sample_num_flag = True
-        self.map_ann_file = '/root/autodl-tmp/Orion_modify/data/infos'
+        self.map_ann_file = 'data/infos'
         self.eval_cfg  = eval_cfg
         self.eval_mode = eval_mode
         with open(self.map_file,'rb') as f: 
