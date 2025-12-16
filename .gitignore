@@ -14,3 +14,17 @@ __pycache__/
 /mmcv/**/*.so
 /mmcv/**/*.o
 /mmcv/**/*.a
+
+# Build artifacts
+*.ninja
+.ninja_deps
+.ninja_log
+build.ninja
+/build/**/*.o
+
+# IDE and editor files
+.vscode/
+.ipynb_checkpoints/
+
+# Model checkpoints (typically too large for git)
+ckpts/
