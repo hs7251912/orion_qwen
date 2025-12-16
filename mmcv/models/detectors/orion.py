@@ -62,7 +62,7 @@ import matplotlib.pyplot as plt
 from mmcv.utils.misc import memory_refresh
 from mmcv.models.utils import build_transformer
 from mmcv.models.builder import HEADS, build_loss 
-from mmcv.models.utils.vis_utils import format_bbox, show_multicam_bboxes, draw_ld_vis
+
 @DETECTORS.register_module()
 class Orion(MVXTwoStageDetector):
     def __init__(self,
@@ -194,37 +194,6 @@ class Orion(MVXTwoStageDetector):
         if lm_head is not None:
             lm_kwargs = dict(use_gen_token=use_gen_token,use_critical_qa=use_critical_qa)
             self.lm_head = load_model(lm_head, use_lora, frozen, lm_kwargs, fp16_infer)
-            # ============ 打印 self.lm_head 网络结构 ============
-            print("\n" + "="*80)
-            print("LM_HEAD 网络结构:")
-            print("="*80)
-            print(self.lm_head)
-            print("\n" + "-"*80)
-            print("LM_HEAD 配置信息:")
-            print("-"*80)
-            print(f"模型类型: {type(self.lm_head).__name__}")
-            print(f"配置类型: {type(self.lm_head.config).__name__}")
-            print(f"隐藏层维度: {self.lm_head.config.hidden_size}")
-            print(f"词表大小: {self.lm_head.config.vocab_size}")
-            print(f"层数: {self.lm_head.config.num_hidden_layers}")
-            print(f"注意力头数: {self.lm_head.config.num_attention_heads}")
-            if hasattr(self.lm_head.config, 'waypoint_token_idx'):
-                print(f"Waypoint Token索引: {self.lm_head.config.waypoint_token_idx}")
-            print(f"使用生成Token: {use_gen_token}")
-            print(f"使用关键QA: {use_critical_qa}")
-            
-            # 统计参数量
-            total_params = sum(p.numel() for p in self.lm_head.parameters())
-            trainable_params = sum(p.numel() for p in self.lm_head.parameters() if p.requires_grad)
-            print("\n" + "-"*80)
-            print("LM_HEAD 参数统计:")
-            print("-"*80)
-            print(f"总参数量: {total_params:,} ({total_params/1e6:.2f}M)")
-            print(f"可训练参数: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
-            print(f"冻结参数: {total_params - trainable_params:,} ({(total_params - trainable_params)/1e6:.2f}M)")
-            print(f"可训练比例: {trainable_params/total_params*100:.2f}%")
-            print("="*80 + "\n")
-            
         if use_gen_token:
             add_special_token([EGO_WAYPOINT_TOKEN], tokenizer = self.tokenizer, model = self.lm_head)
             self.lm_head.config.waypoint_token_idx = self.tokenizer(EGO_WAYPOINT_TOKEN, add_special_tokens=False).input_ids[0]
@@ -413,12 +382,12 @@ class Orion(MVXTwoStageDetector):
         eps = 1e-5
         BN, H, W, _ = memory_centers.shape
         B = data['cam_intrinsic'].size(0)
-
+        # 1. 提取相机内参的焦距 (fx, fy)，并进行归一化处理
         intrinsic = torch.stack([data['cam_intrinsic'][..., 0, 0], data['cam_intrinsic'][..., 1, 1]], dim=-1)
         intrinsic = torch.abs(intrinsic) / 1e3
         intrinsic = intrinsic.repeat(1, H*W, 1).view(B, -1, 2)
         LEN = intrinsic.size(1)
-
+        # 3. 获取深度采样点数量
         num_sample_tokens = LEN
 
         pad_h, pad_w, _ = img_metas[0]['pad_shape'][0]
@@ -712,7 +681,7 @@ class Orion(MVXTwoStageDetector):
                     losses.update(wp_loss=wp_loss)
             else:
                 waypoint = None
-                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
+                vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 529, 4096)
                 vlm_loss= self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False)
                 losses.update(vlm_loss=vlm_loss[0])
         return losses
@@ -980,17 +949,7 @@ class Orion(MVXTwoStageDetector):
                     lane_results[0]['fut_valid_flag'] = False
                 lane_results[0]['ego_fut_preds'] = torch.nan_to_num(ego_fut_pred)
                 lane_results[0]['ego_fut_cmd'] = data['ego_fut_cmd']
-                if os.getenv('DEBUG_SHOW_PRED', None) == "1":
-                    show_dir = os.getenv('DEBUG_SHOW_PRED_DIR', None)
-                    ego_fut_trajs_show = None
-                    if 'ego_fut_trajs' in data:
-                        ego_fut_trajs_show = data['ego_fut_trajs']
-                    if not self.use_gen_token:
-                        ego_fut_preds_inactive = None
-                    img_to_show, img_bev, qa_img = self.show_results(data['img'].unsqueeze(0), img_metas, data, ego_fut_trajs=ego_fut_trajs_show,
-                        waypoint=ego_fut_preds.unsqueeze(0).unsqueeze(0), waypoint_inactive=ego_fut_preds_inactive, bbox_result=bbox_list, 
-                        lane_result=lane_results, metric_dict=metric_dict, use_gt=False, show_dir=show_dir, generated_text=None)
-                    lane_results[0]['result_vis'] = dict(img_to_show=img_to_show, img_bev=img_bev, qa_img=qa_img)
+
             else:
                 metric_dict.update({'fut_valid_flag': False})
                 lane_results[0]['ego_fut_preds'] = torch.zeros((6, 2), dtype=torch.float32).to(location.device)
@@ -1081,243 +1040,6 @@ class Orion(MVXTwoStageDetector):
                 metric_dict['plan_obj_box_col_{}s'.format(i+1)] = 0.0
             
         return metric_dict
-    
-    def show_results(self, img, img_metas, data, map_gt_bboxes_3d=None,
-                          map_gt_labels_3d=None, ego_fut_trajs=None, waypoint_inactive=None,
-                          outs_bbox=None, outs_lane=None, bbox_result=None, lane_result=None,
-                          waypoint=None, metric_dict=None, use_gt=False, show_dir=None, generated_text=None):
-        tasks = [
-            dict(
-                task_name = 'class',
-                num_out = 9,
-                level = 'box',
-                names =[
-                    'car','van','truck','bicycle','traffic_sign','traffic_cone','traffic_light','pedestrian','others'
-                ]
-            ),
-        ]
-        grid_config = {
-            'xbound': [-50.0, 50.0, 0.5],
-            'ybound': [-50.0, 50.0, 0.5],
-            'zbound': [-10.0, 10.0, 20.0],
-            'dbound': [1.0, 64.0, 1.0]}
-
-        cams = ['CAM_FRONT','CAM_FRONT_LEFT','CAM_FRONT_RIGHT',
-                'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
-        cams_canvas_seq = [1, 0, 2, 4, 3, 5]
-        intrinsics = data['cam_intrinsic'][0].cpu().numpy()
-        lidar2img = data['lidar2img'][0].cpu().numpy()
-        lidar2cam = np.linalg.inv(intrinsics) @ lidar2img
-        cam2lidar = np.linalg.inv(lidar2cam)
-
-        intrinsics = intrinsics[:, :3, :3]
-        all_rots = cam2lidar[:, :3, :3]
-        all_trans = cam2lidar[:, :3, 3]
-
-        sample_idx = img_metas[0]['scene_token'] + '/frame_idx_' + str(img_metas[0]['frame_idx'])
-        if not use_gt:
-            if bbox_result is None:
-                bbox_result = self.pts_bbox_head.get_motion_bboxes(outs_bbox, img_metas)
-            if lane_result is None:
-                lane_result = self.map_head.get_bboxes(outs_lane, img_metas)
-
-        aug_imgs = img[0, 0].permute(0, 2, 3, 1).cpu().numpy() 
-        norm_mean = [0.485, 0.456, 0.406]
-        norm_std = [0.229, 0.224, 0.225]
-        norm_mean = np.array(norm_mean).reshape((1, 1, 1, 3))
-        norm_std = np.array(norm_std).reshape((1, 1, 1, 3))
-        aug_imgs = aug_imgs[..., :3] * norm_std + norm_mean
-        aug_imgs = aug_imgs * 255
-        aug_imgs = aug_imgs[..., [2, 1, 0]] # cv2 write uses BGR image 
-        aug_imgs = aug_imgs.astype(np.uint8)
-        aug_imgs = np.ascontiguousarray(aug_imgs)
-
-        all_imgs = []
-        rots = []
-        trans = []
-        intrins = []
-        for img_i in cams_canvas_seq:
-            cam_name = cams[img_i]
-            index = img_i
-            img = aug_imgs[index]
-            all_imgs.append(img)
-            rots.append(all_rots[index])
-            trans.append(all_trans[index])
-            intrins.append(intrinsics[index])
-
-        if not use_gt:
-            bbox = format_bbox(bbox_result[0][0]).copy()
-            bbox[:, [3, 4, 5]] = bbox[:, [4, 3, 5]]
-            bbox[:, 6] = - (bbox[:, 6] + torch.pi / 2)
-            bbox[:, 2] += bbox[:, 5] / 2 
-            pred_dict = {
-                'box' : bbox,
-                'class' : bbox_result[0][2].detach().cpu().numpy(),
-                'score' : bbox_result[0][1].detach().cpu().numpy(),
-            }
-        else:
-            bbox = format_bbox(img_metas[0]['gt_bboxes_3d']).copy()
-            bbox[:, [3, 4, 5]] = bbox[:, [4, 3, 5]]
-            bbox[:, 6] = - (bbox[:, 6] + torch.pi / 2)
-            bbox[:, 2] += bbox[:, 5] / 2 
-            pred_dict = {
-                'box' : bbox,
-                'class' : format_bbox(img_metas[0]['gt_labels_3d'])
-            }
-
-        if show_dir is not None:
-            os.makedirs(show_dir, exist_ok=True)
-
-        img_to_show, img_bev, ratio = show_multicam_bboxes(all_imgs, intrins, rots, trans, cams,
-                             grid_config, 1, tasks, pred_dict,
-                             dataset_type='b2d')
-
-        lidar2ego = img_metas[0]['lidar2ego']
-        if not use_gt:
-            lane_pts_3d = lane_result[0]['map_pts_3d'].detach().cpu().numpy()
-            lane_pts_3d[..., 2] = -lidar2ego[2, 3]
-            lane_labels_3d = lane_result[0]['map_labels_3d'].detach().cpu().numpy()
-        else:
-            lane_pts_3d = map_gt_bboxes_3d[0].fixed_num_sampled_points.detach().cpu().numpy()
-            lane_pts_3d = np.concatenate(
-                (lane_pts_3d, -np.ones_like(lane_pts_3d[:, :, 0:1]) * lidar2ego[2, 3],), axis=-1,)
-            lane_labels_3d = map_gt_labels_3d[0].detach().cpu().numpy()
-        ld_infos = {
-            "lane_pts_3d": lane_pts_3d,
-            "lane_labels_3d": lane_labels_3d,
-            "class_names": ['Broken','Solid','SolidSolid','Center','TrafficLight','StopSign'],
-            "grid_config": grid_config,
-        }
-        calib_infos = {
-            "intrins": intrins,
-            "rots": rots,
-            "trans": trans,
-        }
-        img_to_show, img_bev = draw_ld_vis(
-            all_imgs,
-            calib_infos,
-            cams,
-            img_bev=img_bev,
-            ratio=ratio,
-            ld_infos=ld_infos,
-            draw_aug_img=False,
-            aug_imgs=aug_imgs,
-        )
-        
-        commands = ["LEFT", "RIGHT", "STRAIGHT", "LANE FOLLOW", "CHANGE LANE LEFT", "CHANGE LANE RIGHT"]
-        command = commands[int(data['command'].item())]
-        img_bev = cv2.putText(img_bev, command, (20, 40), cv2.FONT_HERSHEY_TRIPLEX , 0.8, 1, 1, cv2.LINE_AA)
-
-        if waypoint_inactive is not None:
-            if len(waypoint_inactive.shape) < 4:
-                waypoint_inactive = waypoint_inactive.unsqueeze(0)
-            for i in range(waypoint_inactive.shape[1]):
-                if not self.use_diff_decoder:
-                    waypoint_pts = torch.nan_to_num(waypoint_inactive).cumsum(dim=-2) # sample 0, command i
-                else:
-                    waypoint_pts = torch.nan_to_num(waypoint_inactive)
-                waypoint_pts = waypoint_pts[0, i:i+1].to(torch.float32).detach().cpu().numpy()
-                waypoint_pts = np.concatenate(
-                    (waypoint_pts, -np.ones_like(waypoint_pts[:, :, 0:1]) * lidar2ego[2, 3],), axis=-1,)
-                waypoint_infos = {
-                    "lane_pts_3d": waypoint_pts,
-                    "lane_labels_3d": torch.zeros((1,)).to(torch.int).detach().cpu().numpy(),
-                    "class_names": ['waypointInactive'],
-                    "grid_config": grid_config,
-                }
-                img_to_show, img_bev = draw_ld_vis(
-                    all_imgs,
-                    calib_infos,
-                    cams,
-                    img_bev=img_bev,
-                    ratio=ratio,
-                    ld_infos=waypoint_infos,
-                    draw_aug_img=False,
-                    aug_imgs=aug_imgs,
-                )
-            
-        if ego_fut_trajs is not None:
-            ego_fut_trajs_pts = ego_fut_trajs.cumsum(dim=-2)
-            ego_fut_trajs_pts = ego_fut_trajs_pts[0].to(torch.float32).detach().cpu().numpy()
-            ego_fut_trajs_pts = np.concatenate(
-                (ego_fut_trajs_pts, -np.ones_like(ego_fut_trajs_pts[:, :, 0:1]) * lidar2ego[2, 3],), axis=-1,)
-            waypoint_infos = {
-                "lane_pts_3d": ego_fut_trajs_pts,
-                "lane_labels_3d": torch.zeros((1,)).to(torch.int).detach().cpu().numpy(),
-                "class_names": ['waypointGT'],
-                "grid_config": grid_config,
-            }
-            img_to_show, img_bev = draw_ld_vis(
-                all_imgs,
-                calib_infos,
-                cams,
-                img_bev=img_bev,
-                ratio=ratio,
-                ld_infos=waypoint_infos,
-                draw_aug_img=False,
-                aug_imgs=aug_imgs,
-            )
-
-        if waypoint is not None:
-            if not self.use_diff_decoder:
-                waypoint_pts = torch.nan_to_num(waypoint).cumsum(dim=-2)
-            else:
-                waypoint_pts = torch.nan_to_num(waypoint)
-            waypoint_pts = waypoint_pts[0].to(torch.float32).detach().cpu().numpy()
-            waypoint_pts = np.concatenate(
-                (waypoint_pts, -np.ones_like(waypoint_pts[:, :, 0:1]) * lidar2ego[2, 3],), axis=-1,)
-            waypoint_infos = {
-                "lane_pts_3d": waypoint_pts,
-                "lane_labels_3d": torch.zeros((1,)).to(torch.int).detach().cpu().numpy(),
-                "class_names": ['waypoint'],
-                "grid_config": grid_config,
-            }
-            img_to_show, img_bev = draw_ld_vis(
-                all_imgs,
-                calib_infos,
-                cams,
-                img_bev=img_bev,
-                ratio=ratio,
-                ld_infos=waypoint_infos,
-                draw_aug_img=False,
-                aug_imgs=aug_imgs,
-            )
-        
-        img = np.concatenate([img_to_show, img_bev], axis=1)
-        qa_img = np.ones([img.shape[0]//2, img.shape[1],3],dtype=np.uint8)*255
-        if generated_text is not None and len(generated_text):
-            scene_desc_list = []
-            for qa in generated_text:
-                question = 'Q: ' + qa['Q']
-                answer = 'A: ' + qa['A'][0]
-                for i in range(0,len(question),200):
-                    scene_desc_list.append(question[i:i+200])
-                for i in range(0,len(answer),200):
-                    scene_desc_list.append(answer[i:i+200])
-            y = 15
-            for desc in scene_desc_list:
-                qa_img = cv2.putText(qa_img, desc, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1, 1, cv2.LINE_AA)
-                y += 20
-            img = np.concatenate([img, qa_img],axis=0)
-    
-        if show_dir is not None:
-            if use_gt:
-                file_name = 'vis_' + sample_idx.replace('/', '_') + '_gt.jpg'
-                output_path = os.path.join(show_dir, file_name)
-            else:
-                file_name = 'vis_' + sample_idx.replace('/', '_') + '.jpg'
-                output_path = os.path.join(show_dir, file_name)
-  
-            text = file_name
-            position = (10, 30)  
-            font = cv2.FONT_HERSHEY_SIMPLEX  
-            font_scale = 0.7  
-            color = (255, 255, 255)  
-            thickness = 2 
-            cv2.putText(img, text, position, font, font_scale, color, thickness)
-            cv2.imwrite(output_path, img)
-
-        return img_to_show, img_bev, qa_img
     def assign_pred_to_gt_vip3d(
         self,
         bbox_result,

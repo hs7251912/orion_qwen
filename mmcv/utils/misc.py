@@ -411,15 +411,12 @@ def locations(features, stride, pad_h, pad_w):
         return locations
     
 def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False):
-    dtype = torch.float16 if fp16_infer else torch.float32
-    if 'qwen' in base_model.lower():
-        from .qwen_causallm import QwenForCausalLMAdapter
-        model = QwenForCausalLMAdapter.from_pretrained(base_model, torch_dtype=dtype, device_map='cpu', **lm_kwargs)
-    else:
-        model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=dtype, device_map='cpu', **lm_kwargs)
-
     if fp16_infer:
+        model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=torch.float16, device_map='cpu', **lm_kwargs)
+        # use_lora = False
         frozen = True
+    else:
+        model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=torch.float32, device_map='cpu', **lm_kwargs)
     
     model.gradient_checkpointing_enable()
 

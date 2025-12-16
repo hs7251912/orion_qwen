@@ -37,36 +37,33 @@ import numpy as np
 import os
 @HEADS.register_module()
 class OrionHeadM(AnchorFreeHead):
-    """
-    ============================================================================
-    OrionHeadM: 地图元素检测头部（Map Detection Head）
-    ============================================================================
-    
-    核心功能：
-    1. 车道线检测 - 使用贝塞尔曲线表示车道线
-    2. 控制点回归 - 预测n_control个控制点的3D坐标
-    3. 时序建模 - 利用Memory Bank存储历史帧的车道线
-    4. One2One & One2Many匹配 - 借鉴HybridTaskCascade的思想
-    
-    与OrionHead的区别：
-    - OrionHead: 检测动态目标（车辆、行人等）+ 轨迹预测
-    - OrionHeadM: 检测静态地图元素（车道线、路沿等）
-    
-    车道线表示方法：
-    - 使用贝塞尔曲线的控制点表示（默认n_control=4）
-    - 每个控制点是3D坐标 (x, y, z)
-    - 可以转换为更多采样点（num_pts_vector=20）用于可视化
-    
+    """Implements the DETR transformer head.
+    See `paper: End-to-End Object Detection with Transformers
+    <https://arxiv.org/pdf/2005.12872>`_ for details.
     Args:
-        num_classes (int): 车道线类别数（例如：实线、虚线、双黄线等）
-        in_channels (int): 输入特征通道数
-        num_lane (int): 车道线查询数量（类似目标检测的num_query）
-        n_control (int): 贝塞尔曲线控制点数量，默认4
-        num_pts_vector (int): 用于可视化的采样点数量，默认20
-        num_lanes_one2one (int): one2one匹配的车道线数量
-        k_one2many (int): one2many匹配时，每个GT复制的倍数
-        memory_len (int): 记忆库长度
-        topk_proposals (int): 每帧保留的top-k车道线
+        num_classes (int): Number of categories excluding the background.
+        in_channels (int): Number of channels in the input feature map.
+        num_lane (int): Number of query in Transformer.
+        num_reg_fcs (int, optional): Number of fully-connected layers used in
+            `FFN`, which is then used for the regression head. Default 2.
+        transformer (obj:`mmcv.ConfigDict`|dict): Config for transformer.
+            Default: None.
+        sync_cls_avg_factor (bool): Whether to sync the avg_factor of
+            all ranks. Default to False.
+        positional_encoding (obj:`mmcv.ConfigDict`|dict):
+            Config for position encoding.
+        loss_cls (obj:`mmcv.ConfigDict`|dict): Config of the
+            classification loss. Default `CrossEntropyLoss`.
+        loss_bbox (obj:`mmcv.ConfigDict`|dict): Config of the
+            regression loss. Default `L1Loss`.
+        loss_iou (obj:`mmcv.ConfigDict`|dict): Config of the
+            regression iou loss. Default `GIoULoss`.
+        tran_cfg (obj:`mmcv.ConfigDict`|dict): Training config of
+            transformer head.
+        test_cfg (obj:`mmcv.ConfigDict`|dict): Testing config of
+            transformer head.
+        init_cfg (dict or list[dict], optional): Initialization config dict.
+            Default: None
     """
     _version = 2
 
@@ -218,21 +215,8 @@ class OrionHeadM(AnchorFreeHead):
         self.reset_memory()
 
     def _init_layers(self):
-        """
-        初始化网络层
-        ============================================================================
-        主要组件：
-        1. 分类分支 (cls_branch) - 预测车道线类别（实线/虚线等）
-        2. 回归分支 (reg_branch) - 预测n_control个控制点的(x,y,z)坐标
-        3. 查询嵌入 (embeddings) - 为每条车道线和每个控制点生成嵌入
-        
-        与OrionHead的主要区别：
-        - 回归分支输出: n_control*3（控制点坐标）而非边界框参数
-        - 使用点嵌入和实例嵌入的组合生成查询
-        """
+        """Initialize layers of the transformer head."""
 
-        # ============= 分类分支 =============
-        # 预测车道线类别（例如：实线、虚线、双黄线等）
         cls_branch = []
         for _ in range(self.num_reg_fcs):
             cls_branch.append(Linear(self.embed_dims, self.embed_dims))
@@ -244,41 +228,32 @@ class OrionHeadM(AnchorFreeHead):
             cls_branch.append(Linear(self.embed_dims, self.cls_out_channels))
         fc_cls = nn.Sequential(*cls_branch)
 
-        # ============= 控制点回归分支 =============
-        # 输出: [n_control个控制点的(x,y,z)] = n_control*3维
-        # 例如：n_control=4时，输出12维 -> 4个3D控制点
         reg_branch = []
         for _ in range(self.num_reg_fcs):
             reg_branch.append(Linear(self.embed_dims, self.embed_dims))
             reg_branch.append(nn.ReLU())
-        reg_branch.append(Linear(self.embed_dims, self.n_control*3))  # 控制点坐标
+        reg_branch.append(Linear(self.embed_dims, self.n_control*3))
         reg_branch = nn.Sequential(*reg_branch)
 
-        # 为每层decoder克隆预测头（实现iterative refinement）
         self.cls_branches = nn.ModuleList(
             [fc_cls for _ in range(self.num_pred)])
         self.reg_branches = nn.ModuleList(
             [reg_branch for _ in range(self.num_pred)])
 
-        # ============= 特征投影层 =============
         self.input_projection = nn.Linear(self.in_channels, self.embed_dims)
         if self.output_dims is not None:
             self.output_projection = nn.Linear(self.embed_dims, self.output_dims)
 
-        # ============= 车道线查询相关 =============
-        # 用于生成初始的参考点
         self.reference_points_lane = nn.Linear(self.embed_dims, 3)
         
-        # 点嵌入：为每个控制点生成不同的嵌入（n_control个）
-        self.points_embedding_lane = nn.Embedding(self.n_control, self.embed_dims)#(11,256)
-        # 实例嵌入：为每条车道线生成不同的嵌入（num_lane个）
-        self.instance_embedding_lane = nn.Embedding(self.num_lane, self.embed_dims)  #(1800,256)
+        self.points_embedding_lane = nn.Embedding(self.n_control, self.embed_dims)
+        self.instance_embedding_lane = nn.Embedding(self.num_lane, self.embed_dims)
         
-        # 额外查询嵌入（用于捕获场景信息，供VLM使用）
         self.query_embedding = nn.Embedding(self.num_extra, self.embed_dims)
         self.query_pos = None
 
         self.time_embedding = None
+
         self.ego_pose_pe = None
 
     def init_weights(self):
@@ -306,53 +281,26 @@ class OrionHeadM(AnchorFreeHead):
         self.memory_scene_tokens = None
 
     def pre_update_memory(self, img_metas, data):
-        """
-        记忆库预更新 - 管理历史帧的车道线信息
-        ============================================================================
-        
-        功能：
-        1. 初始化记忆库（首次调用）
-        2. 场景切换检测 - 新场景时清空记忆
-        3. 坐标变换 - 将历史车道线坐标转到当前帧坐标系
-        4. 时间戳更新
-        
-        与OrionHead的区别：
-        - memory_reference_point的shape: [B, memory_len, n_control, 3]
-          因为每条车道线有n_control个控制点
-        - 使用transform_reference_points_lane而非transform_reference_points
-          专门处理车道线控制点的变换
-        """
         B = data['img_feats'].size(0)
-        
-        # ========== 情况1: 首次初始化记忆库 ==========
+        # refresh the memory when the scene changes
         if self.memory_embedding is None:
             self.memory_embedding = data['img_feats'].new_zeros(B, self.memory_len, self.embed_dims)
-            # 车道线的参考点是n_control个3D控制点
             self.memory_reference_point = data['img_feats'].new_zeros(B, self.memory_len, self.n_control, 3)
             self.memory_timestamp = data['img_feats'].new_zeros(B, self.memory_len, 1)
             self.memory_egopose = data['img_feats'].new_zeros(B, self.memory_len, 4, 4)
             self.sample_time = data['timestamp'].new_zeros(B)
-            self.memory_mask = data['img_feats'].new_zeros(B, self.memory_len, 1)  # 标记哪些记忆是有效的
+            self.memory_mask = data['img_feats'].new_zeros(B, self.memory_len, 1)
             x = self.sample_time.to(data['img_feats'].dtype)
             self.memory_scene_tokens = ['' for meta in img_metas]
-        # ========== 情况2: 更新已有记忆库 ==========
         else:
-            # 更新时间戳
             self.memory_timestamp += data['timestamp'].unsqueeze(-1).unsqueeze(-1)
             self.sample_time += data['timestamp']
-            
-            # 检测是否需要刷新记忆（时间间隔<2秒 且 场景相同）
             x = (torch.abs(self.sample_time) < 2.0)
             y = [meta['scene_token'] == memory_tokens for meta, memory_tokens in zip(img_metas, self.memory_scene_tokens)]
             y = torch.tensor(y,device=x.device)
             x = torch.logical_and(x,y).to(data['img_feats'].dtype)
-            
-            # 坐标变换：历史帧 -> 当前帧坐标系
             self.memory_egopose = data['ego_pose_inv'].unsqueeze(1) @ self.memory_egopose
-            # 专门用于车道线控制点的变换（处理多个控制点）
             self.memory_reference_point = transform_reference_points_lane(self.memory_reference_point, data['ego_pose_inv'], reverse=False)
-            
-            # 根据场景切换标志刷新记忆
             self.memory_timestamp = memory_refresh(self.memory_timestamp[:, :self.memory_len], x)
             self.memory_reference_point = memory_refresh(self.memory_reference_point[:, :self.memory_len], x)
             self.memory_embedding = memory_refresh(self.memory_embedding[:, :self.memory_len], x)
@@ -438,140 +386,91 @@ class OrionHeadM(AnchorFreeHead):
     
 
     def forward(self, img_metas, pos_embed, **data):
-        """
-        前向传播 - 车道线检测的核心流程
-        ============================================================================
-        
-        处理流程：
-        1. 记忆库预更新 - 处理历史车道线信息
-        2. 特征处理 - 提取图像token序列
-        3. 查询初始化 - 使用点嵌入+实例嵌入生成车道线查询
-        4. Attention Mask构建 - 实现One2One和One2Many的隔离
-        5. 时序对齐 - 融合历史车道线信息
-        6. Transformer解码 - 多层refinement
-        7. 控制点预测 - 输出每条车道线的控制点坐标
-        
+        """Forward function.
         Args:
-            img_metas: 图像元信息
-            pos_embed: 位置编码
-            data: 包含img_feats、ego_pose、timestamp等
-            
+            mlvl_feats (tuple[Tensor]): Features from the upstream
+                network, each is a 5D-tensor with shape
+                (B, N, C, H, W).
         Returns:
-            outs (dict): 包含one2one和one2many的预测结果
-            vlm_memory: VLM输入特征
+            all_cls_scores (Tensor): Outputs from the classification head, \
+                shape [nb_dec, bs, num_lane, cls_out_channels]. Note \
+                cls_out_channels should includes background.
+            all_bbox_preds (Tensor): Sigmoid outputs from the regression \
+                head with normalized coordinate format (cx, cy, w, l, cz, h, theta, vx, vy). \
+                Shape [nb_dec, bs, num_lane, 9].
         """
-        # ========== 步骤1: 记忆库预更新 ==========
         self.pre_update_memory(img_metas, data)
 
-        # ========== 步骤2: 图像特征处理 ==========
         x = data['img_feats']
         B, N, C, H, W = x.shape
         num_tokens = N * H * W
-        memory = x.permute(0, 1, 3, 4, 2).reshape(B, num_tokens, C)  # [B, N*H*W, C]
+        memory = x.permute(0, 1, 3, 4, 2).reshape(B, num_tokens, C)
+
         memory = self.input_projection(memory)
 
-        # ========== 步骤3: 车道线查询初始化 ==========
-        # 关键设计：点嵌入 + 实例嵌入
-        # instance_embedding: [num_lane, embed_dims] - 区分不同车道线
-        # points_embedding: [n_control, embed_dims] - 区分同一车道线的不同控制点
-        # lane_embedding shape: [num_lane, n_control, embed_dims]
+        #1800, 256; 11, 256
         lane_embedding = self.instance_embedding_lane.weight.unsqueeze(-2) + self.points_embedding_lane.weight.unsqueeze(0) 
-        
-        # 生成初始参考点（归一化坐标）
-        # reference_points_lane shape: [B, num_lane, n_control*3]
         reference_points_lane = self.reference_points_lane(lane_embedding).sigmoid().flatten(-2).unsqueeze(0).repeat(B, 1, 1)
-        
-        # 位置编码和查询特征
         query_pos = self.query_pos(nerf_positional_encoding(reference_points_lane))
         tgt = self.instance_embedding_lane.weight.unsqueeze(0).repeat(B, 1, 1)
-        query_embedding = self.query_embedding.weight.unsqueeze(0).repeat(B, 1, 1)  # 额外查询
+        query_embedding = self.query_embedding.weight.unsqueeze(0).repeat(B, 1, 1)
 
-        # ========== 步骤4: 构建Attention Mask（One2One & One2Many）==========
-        # 设计思想：类似HybridTaskCascade
-        # - One2One查询：用于最终输出，严格的1对1匹配
-        # - One2Many查询：用于辅助训练，每个GT匹配多个查询
-        # - 两者之间相互屏蔽，避免信息泄漏
+        # attn mask for Hy
         self_attn_mask = (
             torch.zeros([self.num_lane+self.num_extra, self.num_lane+self.num_extra]).bool().to(x.device)
         )
-        # One2One和One2Many查询相互屏蔽
         self_attn_mask[self.num_lanes_one2one+self.num_extra:, 0: self.num_lanes_one2one+self.num_extra] = True
         self_attn_mask[0: self.num_lanes_one2one+self.num_extra, self.num_lanes_one2one+self.num_extra:] = True
-        
-        # 扩展mask以支持时序建模
         temporal_attn_mask = (
             torch.zeros([self.num_lane+self.num_extra, self.num_lane+self.num_extra+self.memory_len]).bool().to(x.device)
         )
         temporal_attn_mask[:self_attn_mask.size(0), :self_attn_mask.size(1)] = self_attn_mask
         if self.with_mask:
-            # 额外查询的mask规则
             temporal_attn_mask[self.num_extra:, :self.num_extra] = True
 
-        # ========== 步骤5: 时序对齐 ==========
         tgt, query_pos, reference_points_lane, temp_memory, temp_pos, rec_ego_pose = self.temporal_alignment(query_pos, tgt, reference_points_lane)
 
-        # 将额外查询添加到序列开头
         tgt = torch.cat([query_embedding, tgt], dim=1)
         query_pos = torch.cat([torch.zeros_like(query_embedding), query_pos], dim=1)
         
-        # ========== 步骤6: Transformer解码器 ==========
         outs_dec = self.transformer(tgt, memory, query_pos, pos_embed, temporal_attn_mask, temp_memory, temp_pos)
 
-        # 分离额外查询和车道线查询
-        vlm_memory = outs_dec[-1, :, :self.num_extra, :]  # VLM特征
-        outs_dec = outs_dec[:, :, self.num_extra:, :]  # 车道线查询特征
+        vlm_memory = outs_dec[-1, :, :self.num_extra, :]
+        outs_dec = outs_dec[:, :, self.num_extra:, :]
         
         outs_dec = torch.nan_to_num(outs_dec)
         
-        # ========== 步骤7: 预测控制点坐标和类别 ==========
         lane_queries = outs_dec
         outputs_lane_preds = []
         outputs_lane_clses = []
-        
-        for lvl in range(outs_dec.shape[0]):  # 遍历每层decoder
-            # 参考点 + 残差 -> 最终坐标（DETR的标准做法）
+        for lvl in range(outs_dec.shape[0]):
             reference = inverse_sigmoid(reference_points_lane.clone())
             reference = reference.view(B, self.num_lane, self.n_control*3)
-            
-            # 预测残差
             tmp = self.reg_branches[lvl](lane_queries[lvl])
             outputs_lanecls = self.cls_branches[lvl](lane_queries[lvl])
 
-            # 加上参考点，得到最终坐标
             tmp = tmp.reshape(B, self.num_lane, self.n_control*3)
             tmp += reference
-            tmp = tmp.sigmoid()  # 归一化到[0,1]
+            tmp = tmp.sigmoid()
 
-            # reshape为控制点格式
             outputs_coord = tmp
             outputs_coord = outputs_coord.reshape(B, self.num_lane, self.n_control, 3)
             outputs_lane_preds.append(outputs_coord)
             outputs_lane_clses.append(outputs_lanecls)
 
-        # 堆叠所有层的输出
-        all_lane_preds = torch.stack(outputs_lane_preds)  # [num_dec, B, num_lane, n_control, 3]
-        all_lane_clses = torch.stack(outputs_lane_clses)  # [num_dec, B, num_lane, num_classes]
+        all_lane_preds = torch.stack(outputs_lane_preds)  # torch.Size([6, 1, 600, 33])
+        all_lane_clses = torch.stack(outputs_lane_clses)  # torch.Size([6, 1, 600, 1])
 
-        # ========== 步骤8: 坐标反归一化 ==========
-        # 归一化坐标[0,1] -> 真实世界坐标（米）
         all_lane_preds[..., 0:3] = (all_lane_preds[..., 0:3] * (self.pc_range[3:6] - self.pc_range[0:3]) + self.pc_range[0:3])
-        all_lane_preds = all_lane_preds.flatten(-2)  # [num_dec, B, num_lane, n_control*3]
+        all_lane_preds = all_lane_preds.flatten(-2)
 
-        # ========== 步骤9: 分离One2One和One2Many结果 ==========
-        # One2One: 用于最终预测，严格1对1匹配
         all_lane_cls_one2one = all_lane_clses[:, :, 0: self.num_lanes_one2one, :]
         all_lane_preds_one2one = all_lane_preds[:, :, 0: self.num_lanes_one2one, :]
-        # One2Many: 用于辅助训练，提供更多正样本
         all_lane_cls_one2many = all_lane_clses[:, :, self.num_lanes_one2one:, :]
         all_lane_preds_one2many = all_lane_preds[:, :, self.num_lanes_one2one:, :]
         outs_dec_one2one = outs_dec[:, :, 0: self.num_lanes_one2one, :]
         outs_dec_one2many = outs_dec[:, :, self.num_lanes_one2one:, :]
-        
-        # ========== 步骤10: 记忆库后更新 ==========
-        # 只使用One2One的结果更新记忆库
         out_memory = self.post_update_memory(img_metas, data, rec_ego_pose, all_lane_cls_one2one, all_lane_preds_one2one, outs_dec_one2one)
-        
-        # 组装输出字典
         outs = {
             'all_lane_cls_one2one': all_lane_cls_one2one,
             'all_lane_preds_one2one': all_lane_preds_one2one,
@@ -580,8 +479,6 @@ class OrionHeadM(AnchorFreeHead):
             'outs_dec_one2one': outs_dec_one2one,
             'outs_dec_one2many':outs_dec_one2many,
         }
-        
-        # VLM特征投影
         if self.output_dims is not None:
             vlm_memory = self.output_projection(vlm_memory)
         return outs, vlm_memory
@@ -593,33 +490,31 @@ class OrionHeadM(AnchorFreeHead):
              preds_dicts,
              img_metas,
              gt_bboxes_ignore=None):
-        """
-        损失函数 - One2One & One2Many混合训练
-        ============================================================================
-        
-        损失组成：
-        1. One2One损失（主要）：
-           - loss_cls_lane: 分类损失（Focal Loss）
-           - loss_bbox_lane: 控制点坐标L1损失
-           - loss_dir: 方向损失（控制点间的方向一致性）
-           
-        2. One2Many损失（辅助）：
-           - loss_cls_H: One2Many分类损失 * lambda_one2many
-           - loss_bbox_H: One2Many坐标损失 * lambda_one2many
-           
-        One2Many训练策略：
-        - 每个GT车道线复制k_one2many次（例如k=3）
-        - 提供更多正样本，加速收敛
-        - 通过attention mask隔离，不影响One2One预测
-        
+        """"Loss function.
         Args:
-            gt_lanes: GT车道线控制点 [B个list，每个包含num_gt条车道线]
-            gt_lanes_label: GT车道线类别标签
-            preds_dicts: 预测结果字典
-            img_metas: 图像元信息
-            
+            gt_bboxes_list (list[Tensor]): Ground truth bboxes for each image
+                with shape (num_gts, 4) in [tl_x, tl_y, br_x, br_y] format.
+            gt_labels_list (list[Tensor]): Ground truth class indexes for each
+                image with shape (num_gts, ).
+            preds_dicts:
+                all_cls_scores (Tensor): Classification score of all
+                    decoder layers, has shape
+                    [nb_dec, bs, num_lane, cls_out_channels].
+                all_bbox_preds (Tensor): Sigmoid regression
+                    outputs of all decode layers. Each is a 4D-tensor with
+                    normalized coordinate format (cx, cy, w, h) and shape
+                    [nb_dec, bs, num_lane, 4].
+                enc_cls_scores (Tensor): Classification scores of
+                    points on encode feature map , has shape
+                    (N, h*w, num_classes). Only be passed when as_two_stage is
+                    True, otherwise is None.
+                enc_bbox_preds (Tensor): Regression results of each points
+                    on the encode feature map, has shape (N, h*w, 4). Only be
+                    passed when as_two_stage is True, otherwise is None.
+            gt_bboxes_ignore (list[Tensor], optional): Bounding boxes
+                which can be ignored for each image. Default None.
         Returns:
-            loss_dict: 包含各项损失的字典
+            dict[str, Tensor]: A dictionary of loss components.
         """
         assert gt_bboxes_ignore is None, \
             f'{self.__class__.__name__} only supports ' \
@@ -809,32 +704,19 @@ class OrionHeadM(AnchorFreeHead):
                 pos_inds, neg_inds)
 
     def get_bboxes(self, preds_dicts, img_metas, rescale=False):
-        """
-        后处理 - 从预测结果生成最终的车道线
-        ============================================================================
-        
-        流程：
-        1. 提取One2One的预测结果（用于最终输出）
-        2. 对每个样本单独处理
-        3. Top-K选择最高置信度的车道线
-        4. 阈值过滤
-        5. 坐标裁剪（确保在有效范围内）
-        
+        """Generate bboxes from bbox head predictions.
         Args:
-            preds_dicts: 预测结果字典
-            img_metas: 图像元信息
-            rescale: 是否需要rescale（本方法中未使用）
-            
+            preds_dicts (tuple[list[dict]]): Prediction results.
+            img_metas (list[dict]): Point cloud and image's meta info.
         Returns:
-            predictions_list: 每个样本的检测结果列表
+            list[dict]: Decoded bbox, scores and labels after nms.
         """
-        # 只使用One2One的结果（最后一层decoder的输出）
         cls_scores = preds_dicts['all_lane_cls_one2one'][-1]
         bbox_preds = preds_dicts['all_lane_preds_one2one'][-1]
 
         predictions_list = []
         for img_id in range(len(img_metas)):
-            # 从num_lanes_one2one个候选中选择max_num=50条最优的
+            # 增加 map decoder，从300个选择50条最nb的
             cls_score = cls_scores[img_id]
             bbox_pred = bbox_preds[img_id]
             img_shape = img_metas[img_id]['img_shape']
@@ -913,56 +795,22 @@ class OrionHeadM(AnchorFreeHead):
         raise NotImplementedError(f'TODO: replace 4 with self.n_control : {self.n_control}')
 
     def control_points_to_lane_points(self, lanes):
-        """
-        贝塞尔曲线转换 - 将控制点转换为采样点
-        ============================================================================
-        
-        功能：
-        - 将n_control个控制点表示的贝塞尔曲线转换为n_points个采样点
-        - 用于可视化或评估（采样点更密集，曲线更平滑）
-        
-        贝塞尔曲线公式：
-        B(t) = Σ C(n-1,j) * (1-t)^(n-1-j) * t^j * P_j
-        其中：
-        - P_j: 第j个控制点
-        - C(n-1,j): 二项式系数
-        - t ∈ [0, 1]: 参数
-        
-        示例：
-        - 输入: [num_lanes, n_control*3] (例如：[600, 12] - 4个控制点)
-        - 输出: [num_lanes, n_points*3] (例如：[600, 33] - 11个采样点)
-        
-        Args:
-            lanes: 控制点坐标 [num_lanes, n_control*3]
-            
-        Returns:
-            lanes: 采样点坐标 [num_lanes, n_points*3]
-        """
-        if lanes.shape[-1] == 0:
-            return lanes.reshape(-1, 33)
-        lanes = lanes.reshape(-1, lanes.shape[-1] // 3, 3)  # [num_lanes, n_control, 3]
+            if lanes.shape[-1] == 0:
+                return lanes.reshape(-1, 33)
+            lanes = lanes.reshape(-1, lanes.shape[-1] // 3, 3)
 
-        # 二项式系数计算
-        def comb(n, k):
-            return factorial(n) // (factorial(k) * factorial(n - k))
+            def comb(n, k):
+                return factorial(n) // (factorial(k) * factorial(n - k))
 
-        # 生成n_points个采样点
-        n_points = 11  # 目标采样点数量
-        n_control = lanes.shape[1]  # 控制点数量
-        
-        # 构建贝塞尔矩阵A: [n_points, n_control]
-        A = np.zeros((n_points, n_control))
-        t = np.arange(n_points) / (n_points - 1)  # t ∈ [0, 1]
-        
-        # 计算贝塞尔基函数
-        for i in range(n_points):
-            for j in range(n_control):
-                # 贝塞尔基函数: B_{n-1,j}(t)
-                A[i, j] = comb(n_control - 1, j) * np.power(1 - t[i], n_control - 1 - j) * np.power(t[i], j)
-        
-        bezier_A = torch.tensor(A, dtype=torch.float32).to(lanes.device)
-        # 矩阵乘法: [n_points, n_control] @ [num_lanes, n_control, 3] -> [num_lanes, n_points, 3]
-        lanes = torch.einsum('ij,njk->nik', bezier_A, lanes)
-        lanes = lanes.reshape(lanes.shape[0], -1)  # [num_lanes, n_points*3]
+            n_points = 11
+            n_control = lanes.shape[1]
+            A = np.zeros((n_points, n_control))
+            t = np.arange(n_points) / (n_points - 1)
+            for i in range(n_points):
+                for j in range(n_control):
+                    A[i, j] = comb(n_control - 1, j) * np.power(1 - t[i], n_control - 1 - j) * np.power(t[i], j)
+            bezier_A = torch.tensor(A, dtype=torch.float32).to(lanes.device)
+            lanes = torch.einsum('ij,njk->nik', bezier_A, lanes)
+            lanes = lanes.reshape(lanes.shape[0], -1)
 
-        return lanes
+            return lanes

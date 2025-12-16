@@ -873,7 +873,7 @@ class LoadAnnoatationVQA():
             self, 
             tokenizer, 
             max_length, 
-            base_desc_path='/root/autodl-tmp/Orion_modify/data/chat-B2D/train',
+            base_desc_path=None,
             n_gen=1, 
             planning_qa_only=False,
             planning_qa_last=False,
@@ -889,20 +889,7 @@ class LoadAnnoatationVQA():
                                             use_fast=False,
                                             )
         self.n_gen = n_gen
-        # 适配 Qwen/LLaMA tokenizer 的 pad_token 设置
-        tok_path = str(tokenizer).lower()
-        is_qwen = ('qwen' in tok_path) or ('qwen' in getattr(self.tokenizer, 'name_or_path', '').lower())
-        if is_qwen:
-            # Qwen 系列：无 unk_token，使用 eos_token 作为 pad
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-        else:
-            # 其他模型：使用 unk_token 作为 pad
-            if getattr(self.tokenizer, 'pad_token', None) is None:
-                if getattr(self.tokenizer, 'unk_token', None) is not None:
-                    self.tokenizer.pad_token = self.tokenizer.unk_token
-                else:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.pad_token = self.tokenizer.unk_token
         self.planning_qa_only = planning_qa_only
         self.planning_qa_last = planning_qa_last
         self.base_desc_path = base_desc_path
@@ -1102,20 +1089,7 @@ class LoadAnnoatationCriticalVQATest():
                                             padding_side="right",
                                             use_fast=False,
                                             )
-        # 适配 Qwen/LLaMA tokenizer 的 pad_token 设置
-        tok_path = str(tokenizer).lower()
-        is_qwen = ('qwen' in tok_path) or ('qwen' in getattr(self.tokenizer, 'name_or_path', '').lower())
-        if is_qwen:
-            # Qwen 系列：无 unk_token，使用 eos_token 作为 pad
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-        else:
-            # 其他模型：使用 unk_token 作为 pad
-            if getattr(self.tokenizer, 'pad_token', None) is None:
-                if getattr(self.tokenizer, 'unk_token', None) is not None:
-                    self.tokenizer.pad_token = self.tokenizer.unk_token
-                else:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.pad_token = self.tokenizer.unk_token
         self.load_type = load_type
         self.template = [
                         "What can you tell about the current driving conditions from the images?",
@@ -1267,174 +1241,3 @@ def analyze_position(x, y, angle_deg):
         direction += ", heading from left to right, "
 
     return direction.strip()
-
-
-@PIPELINES.register_module()
-class LoadAnnoatationCriticalVQAEval():
-    def __init__(
-            self, 
-            tokenizer, 
-            max_length,
-            load_type=["conv", "planning", "counter"], 
-            base_desc_path='/root/autodl-tmp/Orion_modify/data/chat-B2D/val',
-            planning_qa_command=False,
-            desc_qa=False,
-            use_gen_token=False,
-            merge_multiround_qa_into_one=False,
-            ):
-        self.tokenizer =  AutoTokenizer.from_pretrained(tokenizer,
-                                            model_max_length=max_length,
-                                            padding_side="right",
-                                            use_fast=False,
-                                            )
-        # 适配 Qwen/LLaMA tokenizer 的 pad_token 设置
-        tok_path = str(tokenizer).lower()
-        is_qwen = ('qwen' in tok_path) or ('qwen' in getattr(self.tokenizer, 'name_or_path', '').lower())
-        if is_qwen:
-            # Qwen 系列：无 unk_token，使用 eos_token 作为 pad
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-        else:
-            # 其他模型：使用 unk_token 作为 pad
-            if getattr(self.tokenizer, 'pad_token', None) is None:
-                if getattr(self.tokenizer, 'unk_token', None) is not None:
-                    self.tokenizer.pad_token = self.tokenizer.unk_token
-                else:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.load_type = load_type
-        self.template = [
-                        "What can you tell about the current driving conditions from the images?",
-                        "What can be observed in the panoramic images provided?",
-                        "Can you provide a summary of the current driving scenario based on the input images?",
-                        "What can you observe from the provided images regarding the driving conditions?",
-                        "Please describe the current driving conditions based on the images provided.",
-                        "Can you describe the current weather conditions and the general environment depicted in the images?",
-                        "Please describe the current driving conditions based on the input images.",
-                        "Could you summarize the current driving conditions based on the input images?",
-                        "Please provide an overview of the current driving conditions based on the images.",
-                        "Can you summarize what the panoramic images show?",
-                        "Can you describe the overall conditions and environment based on the images?",
-                        "Could you describe the overall environment and objects captured in the images provided?"
-                        ]
-
-        self.critical_object_template = [
-                        "Where are the critical objects in the scene and what impact do they have on the ego vehicle?",
-                        "Identify the significant objects in the scene and their specific impacts on the ego vehicle.",
-                        "Can you pinpoint the critical objects in the scene and describe their influence on the ego vehicle?",
-                        "Which objects in the scene are critical, and what effects do they have on the ego vehicle's movement?",
-                        "Please describe the critical objects in the scene, their positions, and the influence they have on the ego vehicle."
-                        ]
-
-        self.command_template = [
-                                "The current driving instruction is to turn left.",
-                                "The current driving instruction is to turn right.",
-                                "The current driving instruction is to go straight.",
-                                "The current driving instruction is to drive following the lane.",
-                                "The current driving instruction is to change lanes to the left.",
-                                "The current driving instruction is to change lanes to the right."]
-        self.base_desc_path = base_desc_path
-        self.desc_qa = desc_qa
-        self.use_gen_token = use_gen_token
-        self.merge_multiround_qa_into_one = merge_multiround_qa_into_one
-        self.merge_qa_prompt = ['I will ask you three questions, and you need to answer them one by one.',
-                                'The first question is: ',
-                                'The second question is: ',
-                                'The third question is: ',
-                                ]
-        
-    # def preprocess_vqa(self, results):
-    #     sources = []
-    #     question = str(random.choice(self.template))
-    #     critical_object_question = str(random.choice(self.critical_object_template))
-    #     if "critical_qa" in self.load_type:
-    #             sources.append(
-    #                 [
-    #                     {"from": 'human',
-    #                     "value": question},
-    #                     {"from": 'gpt',
-    #                     "value": ""}
-    #                     ]
-    #             )
-    #             sources.append(
-    #                         [
-    #                             {"from": 'human',
-    #                             "value": critical_object_question},
-    #                             {"from": 'gpt',
-    #                             "value": ""}
-    #                             ]
-    #                     )
-    #             sources.append(
-    #                     [
-    #                         {"from": 'human',
-    #                         "value": "Please describe your driving behavior and explain the reasons."},
-    #                         {"from": 'gpt',
-    #                         "value": ""}
-    #                         ]
-    #                 )
-    #             if self.merge_multiround_qa_into_one:
-    #                 sources = []
-    #                 sources.append(
-    #                         [
-    #                             {"from": 'human',
-    #                             "value": self.merge_qa_prompt[0] + ' ' + self.merge_qa_prompt[1] + question + ' ' + self.merge_qa_prompt[2] + critical_object_question + ' ' + self.merge_qa_prompt[3] + "Please describe your driving behavior and explain the reasons."},
-    #                             {"from": 'gpt',
-    #                             "value": ""}
-    #                             ]
-    #                     )
-    #     if "planning" in self.load_type: # planning trajs
-    #         sources.append(
-    #                 [
-    #                     {"from": 'human',
-    #                     "value": "Please provide the planning trajectory for the ego car without reasons."},
-    #                     {"from": 'gpt',
-    #                     "value": ""}
-    #                     ]
-    #             )
-    #     return sources  
-
-    def preprocess_vqa(self, results):
-        sources = []
-        if self.base_desc_path is not None:
-            image_path = Path(results['img_filename'][0])
-            json_directory = image_path.parent.parent.parent.stem 
-
-            with open(self.base_desc_path+'/'+json_directory +'/'+ f'{image_path.stem}.json', 'r') as f:
-                desc = json.load(f)
-            sources.extend(desc)
-        return sources  
-    
-
-    def __call__(self, results):
-        sources = self.preprocess_vqa(results)
-        prompt = f"You are driving a car."
-
-        if self.use_gen_token:
-            if not self.desc_qa:
-                sources = []
-            sources += [
-                [{"from": 'human',
-                "value": "Please provide the planning trajectory for the ego car without reasons."},
-                {"from": 'gpt',
-                "value": "Here is the planning trajectory <waypoint_ego>"}]
-            ]
-        vlm_labels = [anno[0]['value'] for anno in sources]
-
-        if self.use_gen_token:
-            vqa_anno = [item for pair in sources for item in pair]
-            num_new_tokens = self.tokenizer.add_tokens(["<waypoint_ego>"], special_tokens = True)
-            vqa_anno[0]['value'] = DEFAULT_IMAGE_TOKEN + '\n' + prompt + vqa_anno[0]['value']
-        else:
-            vqa_anno = [item for pair in sources for item in pair]
-            vqa_anno[0]['value'] = DEFAULT_IMAGE_TOKEN + '\n' + prompt + vqa_anno[0]['value']
-        
-        vqa_converted = preprocess(sources, self.tokenizer, has_image=True, training_mode=False, only_one_system_prompt = True)
-        input_ids = vqa_converted['input_ids']
-
-        results['input_ids'] = input_ids
-        results['vlm_labels'] = vlm_labels
-        
-        return results
-
-    def __repr__(self):
-        repr_str = self.__class__.__name__
-        return repr_str

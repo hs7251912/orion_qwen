@@ -152,11 +152,11 @@ predict_steps = 12
 predict_modes = 6
 use_nonlinear_optimizer = True
 use_memory = True
-num_gpus = 32
-batch_size = 4
+num_gpus = 1
+batch_size = 2
 num_iters_per_epoch = 234769 // (num_gpus * batch_size)
-num_epochs = 6
-llm_path = '/root/autodl-tmp/Orion_modify/ckpts/pretrain_qformer/'
+num_epochs = 2
+llm_path = '/root/autodl-tmp/Orion_modify/ckpts/pretrain_qformer'
 use_gen_token = False
 collect_keys = ['lidar2img', 'cam_intrinsic', 'timestamp', 'ego_pose', 'ego_pose_inv', 'command']
 pretrain = True # stage1 pretrain, False for stage 2 finetune
@@ -529,5 +529,5 @@ log_config = dict(
     interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook")]
 )
 
-load_from='ckpts/eva02_petr_proj.pth'
+load_from='/root/autodl-tmp/Orion_modify/ckpts/Orion.pth'
 resume_from=None

@@ -179,79 +179,21 @@ def obtain_map_info(nusc,
     map_mask = np.concatenate([erode[None], map_mask[None]], axis=0)
     return map_mask
 
-def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
-    """
-    将包含 <image> 占位符的文本进行tokenize，并在图像位置插入特殊token索引
-    
-    功能：将文本中的 <image> 占位符替换为 IMAGE_TOKEN_INDEX（默认-200）
-    
-    示例：
-        输入: "Describe <image> in detail"
-        处理: ["Describe ", " in detail"] -> tokenize -> 插入-200
-        输出: [101, 2342, 5436, -200, 1999, 4617, 102]
-    
-    参数:
-        prompt: 包含 <image> 占位符的提示文本
-        tokenizer: HuggingFace tokenizer
-        image_token_index: 图像token的索引值（默认-200）
-        return_tensors: 返回格式，'pt'表示PyTorch tensor
-    
-    返回:
-        token IDs列表或tensor（包含图像占位符-200）
-    """
-    # ============================================================================
-    # 步骤1: 按 <image> 分割文本并分别tokenize
-    # ============================================================================
-    # 例如："Describe <image> in detail" -> ["Describe ", " in detail"]
-    # 然后对每块进行tokenize: [[101, 2342, 5436], [1999, 4617, 102]]
+def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):# 插入-200
     prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
 
-    # ============================================================================
-    # 辅助函数: 在列表元素之间插入分隔符
-    # ============================================================================
     def insert_separator(X, sep):
-        """
-        在列表X的每两个元素之间插入分隔符sep
-        
-        示例：
-            X = [[1,2], [3,4], [5,6]]
-            sep = [-200]
-            返回: [[1,2], [-200], [3,4], [-200], [5,6]]
-        
-        实现原理：
-            1. zip(X, [sep]*len(X)) 创建配对: [([1,2], [-200]), ([3,4], [-200]), ([5,6], [-200])]
-            2. 展平: [[1,2], [-200], [3,4], [-200], [5,6], [-200]]
-            3. [:-1] 移除最后多余的sep
-        """
         return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
 
-    # ============================================================================
-    # 步骤2: 处理BOS token（句子开始标记）
-    # ============================================================================
     input_ids = []
-    offset = 0  # 偏移量，用于跳过重复的BOS token
-    
-    # 检查第一个chunk是否以BOS token开始（如 <s> 在LLaMA中）
+    offset = 0
     if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
-        offset = 1  # 设置偏移量为1，跳过后续chunk中的BOS token
-        input_ids.append(prompt_chunks[0][0])  # 只保留第一个BOS token
+        offset = 1
+        input_ids.append(prompt_chunks[0][0])
 
-    # ============================================================================
-    # 步骤3: 在文本块之间插入图像token索引
-    # ============================================================================
-    # insert_separator会在每两个文本块之间插入 [image_token_index]
-    # offset + 1: 如果有BOS token，插入一个-200；否则插入一个-200
-    # 
-    # 示例（有BOS）：
-    #   prompt_chunks = [[1, 2, 3], [1, 4, 5]]  # 1是BOS token
-    #   插入后: [[1, 2, 3], [-200], [1, 4, 5]]
-    #   x[offset:] 会跳过第二个chunk的BOS: [2, 3], [-200], [4, 5]
     for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
-        input_ids.extend(x[offset:])  # offset用于跳过除第一个外的BOS token
+        input_ids.extend(x[offset:])
 
-    # ============================================================================
-    # 步骤4: 返回结果
-    # ============================================================================
     if return_tensors is not None:
         if return_tensors == 'pt':
             return torch.tensor(input_ids, dtype=torch.long)
@@ -357,10 +299,9 @@ def preprocess_llama_2(
     sep = "[/INST] "
     for conversation, target in zip(conversations, targets):
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
-        
+
         rounds = conversation.split(conv.sep2)
         cur_len = 1
-        print(f"[CUR_LEN_DEBUG] Initial cur_len={cur_len}, total_len={total_len}, diff={total_len - cur_len}")
         target[:cur_len] = IGNORE_INDEX
         for i, rou in enumerate(rounds):
             if rou == "":
@@ -372,41 +313,11 @@ def preprocess_llama_2(
             parts[0] += sep
 
             if has_image:
-                # 图像+文本模式：动态计算特殊 token（关键修复）
-                # 1. round_len: 使用 tokenizer_image_token 但需要减去特殊 token
-                rou_tokens_img = tokenizer_image_token(rou, tokenizer, return_tensors=None)
-                # 检查文本部分添加了多少特殊 token
-                rou_text_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
-                rou_text_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
-                rou_num_special = len(rou_text_tokens_with) - len(rou_text_tokens_without)
-                round_len = len(rou_tokens_img) - rou_num_special
-                # DEBUG_INJECTION_MARKER - 这是注入的调试代码
-                print(f"[DEBUG_INJECTION] has_image=True, rou_tokens_img={len(rou_tokens_img)}, rou_num_special={rou_num_special}, round_len={round_len}")
-                
-                # 2. instruction_len: 同样处理
-                inst_tokens_with_img = tokenizer_image_token(parts[0], tokenizer, return_tensors=None)
-                inst_text_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
-                inst_text_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
-                inst_num_special = len(inst_text_tokens_with) - len(inst_text_tokens_without)
-                instruction_len = len(inst_tokens_with_img) - inst_num_special
-                
-                num_special_tokens = inst_num_special  # 用于调试
+                round_len = len(tokenizer_image_token(rou, tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
             else:
-                # 动态计算特殊 token 数量，适配不同 tokenizer (LLaMA/Qwen)
-                # 关键修复：round_len 和 instruction_len 都需要去除特殊 token
-                # 1. round_len: 整轮对话的 token 数量（不含特殊 token）
-                rou_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
-                rou_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
-                rou_num_special = len(rou_tokens_with) - len(rou_tokens_without)
-                round_len = len(rou_tokens_with) - rou_num_special
-                
-                # 2. instruction_len: 指令部分的 token 数量（不含特殊 token）
-                inst_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
-                inst_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
-                inst_num_special = len(inst_tokens_with) - len(inst_tokens_without)
-                instruction_len = len(inst_tokens_with) - inst_num_special
-                
-                num_special_tokens = inst_num_special  # 用于调试
+                round_len = len(tokenizer(rou).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
 
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
@@ -416,14 +327,9 @@ def preprocess_llama_2(
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
-                # 详细调试信息
-                debug_info = f"has_image={has_image}, num_special={num_special_tokens if 'num_special_tokens' in locals() else 'N/A'}, "
-                debug_info += f"round_len={round_len if 'round_len' in locals() else 'N/A'}, "
-                debug_info += f"instruction_len={instruction_len if 'instruction_len' in locals() else 'N/A'}"
                 print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}. (ignored)\n"
-                    f"  DEBUG: {debug_info}\n"
-                    f"  Conversation snippet: {conversation[:100] if len(conversation) > 0 else 'empty'}..."
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
                 )
 
     return dict(
@@ -502,41 +408,11 @@ def preprocess_v1(
             parts[0] += sep
 
             if has_image:
-                # 图像+文本模式：动态计算特殊 token（关键修复）
-                # 1. round_len: 使用 tokenizer_image_token 但需要减去特殊 token
-                rou_tokens_img = tokenizer_image_token(rou, tokenizer, return_tensors=None)
-                # 检查文本部分添加了多少特殊 token
-                rou_text_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
-                rou_text_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
-                rou_num_special = len(rou_text_tokens_with) - len(rou_text_tokens_without)
-                round_len = len(rou_tokens_img) - rou_num_special
-                # DEBUG_INJECTION_MARKER - 这是注入的调试代码
-                print(f"[DEBUG_INJECTION] has_image=True, rou_tokens_img={len(rou_tokens_img)}, rou_num_special={rou_num_special}, round_len={round_len}")
-                
-                # 2. instruction_len: 同样处理
-                inst_tokens_with_img = tokenizer_image_token(parts[0], tokenizer, return_tensors=None)
-                inst_text_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
-                inst_text_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
-                inst_num_special = len(inst_text_tokens_with) - len(inst_text_tokens_without)
-                instruction_len = len(inst_tokens_with_img) - inst_num_special
-                
-                num_special_tokens = inst_num_special  # 用于调试
+                round_len = len(tokenizer_image_token(rou, tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
             else:
-                # 动态计算特殊 token 数量，适配不同 tokenizer (LLaMA/Qwen)
-                # 关键修复：round_len 和 instruction_len 都需要去除特殊 token
-                # 1. round_len: 整轮对话的 token 数量（不含特殊 token）
-                rou_tokens_with = tokenizer(rou, add_special_tokens=True).input_ids
-                rou_tokens_without = tokenizer(rou, add_special_tokens=False).input_ids
-                rou_num_special = len(rou_tokens_with) - len(rou_tokens_without)
-                round_len = len(rou_tokens_with) - rou_num_special
-                
-                # 2. instruction_len: 指令部分的 token 数量（不含特殊 token）
-                inst_tokens_with = tokenizer(parts[0], add_special_tokens=True).input_ids
-                inst_tokens_without = tokenizer(parts[0], add_special_tokens=False).input_ids
-                inst_num_special = len(inst_tokens_with) - len(inst_tokens_without)
-                instruction_len = len(inst_tokens_with) - inst_num_special
-                
-                num_special_tokens = inst_num_special  # 用于调试
+                round_len = len(tokenizer(rou).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
 
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
@@ -547,14 +423,9 @@ def preprocess_v1(
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
                 if len(rounds) != 1:
-                    # 详细调试信息
-                    debug_info = f"has_image={has_image}, num_special={num_special_tokens if 'num_special_tokens' in locals() else 'N/A'}, "
-                    debug_info += f"round_len={round_len if 'round_len' in locals() else 'N/A'}, "
-                    debug_info += f"instruction_len={instruction_len if 'instruction_len' in locals() else 'N/A'}"
                     print(
-                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}. (ignored)\n"
-                        f"  DEBUG: {debug_info}\n"
-                        f"  Conversation snippet: {conversation[:100] if len(conversation) > 0 else 'empty'}..."
+                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                        f" (ignored)"
                     )
 
     return dict(
